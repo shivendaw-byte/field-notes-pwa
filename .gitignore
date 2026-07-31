@@ -1,0 +1,7 @@
+# Never commit contact data — it contains real phone numbers.
+*.csv
+*BACKUP*
+.vercel
+.DS_Store
+Thumbs.db
+*.log

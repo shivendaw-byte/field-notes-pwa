@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<title>Field Notes</title>
+<meta name="description" content="A private tracker for the people you actually want to keep in your life.">
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0c0a09">
+<meta name="color-scheme" content="dark">
+
+<!-- iOS install support -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Field Notes">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <div class="brand">Field Notes</div>
+      <div class="count" id="totalCount">—</div>
+    </div>
+    <button class="icon-btn" id="installBtn" hidden aria-label="Install app">Install</button>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab on" data-tab="tiering" role="tab" aria-selected="true">Tiering</button>
+    <button class="tab" data-tab="travel" role="tab" aria-selected="false">Travel</button>
+    <button class="tab" data-tab="add" role="tab" aria-selected="false">
+      Add <span class="pill" id="pendingPill" hidden></span>
+    </button>
+  </nav>
+
+  <main id="view" role="tabpanel">
+    <div class="empty" id="bootMsg">
+      Loading contacts…
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function () { /* offline support unavailable */ });
+    });
+  }
+</script>
+<script>
+  // If the app never rendered, say why instead of showing a blank screen.
+  setTimeout(function () {
+    var boot = document.getElementById('bootMsg');
+    if (!boot) return;
+    var missing = [];
+    if (!window.SEED_CONTACTS) missing.push('data.js');
+    if (!window.__FIELD_NOTES_READY) missing.push('app.js');
+    boot.innerHTML = missing.length
+      ? 'Could not load: <strong>' + missing.join(', ') + '</strong>.<br><br>' +
+        'These files must sit in the same folder as index.html. If you deployed to Vercel, ' +
+        'make sure you uploaded the <strong>contents</strong> of the pwa folder, not the folder itself.'
+      : 'Loaded, but nothing rendered. Try a hard refresh.';
+  }, 1200);
+</script>
+</body>
+</html>
