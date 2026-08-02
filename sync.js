@@ -105,6 +105,33 @@
     return (list || []).filter(function (d) { return new Date(d.at).getTime() > cut; });
   }
 
+  /* Union the append-only lists on a contact, keeping every dated fact from
+     both devices. Interactions are plain date strings; tier changes are
+     objects keyed by date+from+to. */
+  function mergeHistories(winner, a, b) {
+    var out = {}, k;
+    for (k in winner) if (winner.hasOwnProperty(k)) out[k] = winner[k];
+
+    var seen = {}, dates = [];
+    [].concat(a.interactions || [], b.interactions || []).forEach(function (d) {
+      if (d && !seen[d]) { seen[d] = 1; dates.push(d); }
+    });
+    out.interactions = dates.sort();
+    out.lastContact = dates.length ? dates[dates.length - 1] : "";
+
+    var seenM = {}, moves = [];
+    [].concat(a.tierLog || [], b.tierLog || []).forEach(function (m) {
+      if (!m || !m.date) return;
+      var key = m.date + "|" + m.from + "|" + m.to;
+      if (seenM[key]) return;
+      seenM[key] = 1;
+      moves.push(m);
+    });
+    out.tierLog = moves.sort(function (x, y) { return x.date < y.date ? -1 : 1; });
+
+    return out;
+  }
+
   // Last-write-wins per contact, with tombstones so a delete on one device
   // is not resurrected by the other device still holding a copy.
   function merge(local, remote) {
@@ -118,7 +145,12 @@
       c = local.contacts[i];
       if (!c || !c.id) continue;
       var r = byId[c.id];
-      if (!r || String(c.updatedAt || "") >= String(r.updatedAt || "")) byId[c.id] = c;
+      if (!r) { byId[c.id] = c; continue; }
+      var winner = String(c.updatedAt || "") >= String(r.updatedAt || "") ? c : r;
+      // Histories are append-only facts, so they union rather than let the
+      // newer side's copy win. Straight last-write-wins would silently drop
+      // interactions and tier changes recorded on the other device.
+      byId[c.id] = mergeHistories(winner, c, r);
     }
 
     var delMap = {};

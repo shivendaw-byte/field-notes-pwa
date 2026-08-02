@@ -50,7 +50,40 @@
   var SNOOZE_DAYS = 10;
   var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "8.2";
+  /* Three independent display settings: nav labels, tier labels, and whether
+     the explanatory subheadings show at all. Symbol mode also means nobody
+     glancing at the screen can read what any of it is. */
+  var SYMBOLS = {
+    tiering: "\u227B", log: "\u03A3", past: "\u222B",
+    reconnect: "\u22C8", add: "\u2295", insights: "\u0394"
+  };
+  /* Close, Middle and Acquaintance are degrees of closeness. Networking is a
+     different purpose entirely, so it gets a connector rather than a degree. */
+  var TIER_SYMBOL = { Close: "1\u00B0", Middle: "2\u00B0", Acquaintance: "3\u00B0", Networking: "\u21C4" };
+  var TIER_EMOJI  = { Close: "\uD83D\uDC9B", Middle: "\uD83C\uDF3F", Acquaintance: "\uD83D\uDC4B", Networking: "\uD83E\uDD1D" };
+
+  function setting(k, dflt) {
+    return (state && state.settings && state.settings[k]) || dflt;
+  }
+  function navLabel(key, text) {
+    var mode = setting("navMode", "text"), sym = SYMBOLS[key];
+    if (!sym || mode === "text") return esc(text);
+    if (mode === "symbol") return '<span class="sym" title="' + esc(text) + '">' + sym + "</span>";
+    return '<span class="sym">' + sym + '</span><span class="symtext">' + esc(text) + "</span>";
+  }
+  function tierLabel(t) {
+    var mode = setting("tierMode", "name");
+    if (mode === "symbol") return TIER_SYMBOL[t] || t;
+    if (mode === "emoji") return TIER_EMOJI[t] || t;
+    return t;
+  }
+  /* Subheadings are the one-line explanations under each screen title. Once you
+     know the app they are noise, so they can be switched off entirely. */
+  function subLine(text) {
+    return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
+  }
+
+  var APP_VERSION = "9.1";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -60,8 +93,11 @@
   var memoryFallback = null;
   var state, tab = "tiering", openId = null;
   var browseBy = "tier", tierFilter = "Close", groupFilter = "";
-  var tierQuery = "", travelQuery = "", logQuery = "", searchAll = false;
+  var tierQuery = "", logQuery = "", searchAll = false;
   var orderSnapshot = null;   // frozen contact order for the current tier/grouping
+  var logSub = "daily";        // daily | past
+  var calMonth = null;         // Date anchored to the 1st of the shown month
+  var calDay = "";             // selected day in the past view
   var nudgeFor = null;   // contact id currently shown in the reminder card
   var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
@@ -78,6 +114,29 @@
   function nowISO() { return new Date().toISOString(); }
   function monthsSince(d) { return d ? Math.round((Date.now() - new Date(d)) / 2592000000) : null; }
   function daysSince(d) { return d ? Math.floor((Date.now() - new Date(d)) / 86400000) : null; }
+  /* Whole days from a to b; negative when b precedes a. */
+  function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+  /* Interaction dates are stored ascending, unique, one per day. */
+  function dedupeDates(list) {
+    var seen = {}, out = [];
+    (list || []).forEach(function (d) {
+      if (!d || seen[d]) return;
+      seen[d] = 1;
+      out.push(d);
+    });
+    return out.sort();
+  }
+  function logInteraction(c, date) {
+    c.interactions = dedupeDates((c.interactions || []).concat(date || today()));
+    c.lastContact = c.interactions[c.interactions.length - 1];
+  }
+  function unlogInteraction(c, date) {
+    var d = date || today();
+    c.interactions = (c.interactions || []).filter(function (x) { return x !== d; });
+    c.lastContact = c.interactions.length ? c.interactions[c.interactions.length - 1] : "";
+  }
+  function interactionCount(c) { return (c.interactions || []).length; }
+
   function addDays(iso, n) {
     var d = new Date(iso);
     d.setDate(d.getDate() + n);
@@ -92,7 +151,7 @@
       id: uid(), name: "", tier: "Acquaintance", potential: "",
       company: "", school: "", location: "", locationConfirmed: "",
       notes: "", phone: "", email: "", pending: false, added: "",
-      lastContact: "", prevContact: "", touches: 0,
+      interactions: [], lastContact: "", tierLog: [],
       tierSince: "", snoozedUntil: "", updatedAt: nowISO()
     };
     if (over) for (var k in over) if (over.hasOwnProperty(k)) c[k] = over[k];
@@ -105,6 +164,9 @@
     if (!s.settings || typeof s.settings !== "object") s.settings = {};
     if (s.settings.lastExport === undefined) s.settings.lastExport = "";
     if (s.settings.onboarded === undefined) s.settings.onboarded = false;
+    if (!s.settings.navMode) s.settings.navMode = "text";      // text | both | symbol
+    if (!s.settings.tierMode) s.settings.tierMode = "name";     // name | symbol | emoji
+    if (!s.settings.showSub) s.settings.showSub = "on";         // on | off
     /* Display preferences. Defaults reproduce the behaviour that shipped, so an
        existing install sees no change until it opts in. */
     if (!s.settings.subtitle || typeof s.settings.subtitle !== "object") {
@@ -125,13 +187,22 @@
         if (add.length) c.notes = (c.notes ? c.notes.replace(/\s*$/, "") + " " : "") + add.join(" ");
       }
       delete c.roles; delete c.roleOther; delete c.purpose; delete c.showOther;
-      if (c.lastContact === undefined) c.lastContact = "";
-      if (typeof c.touches !== "number") c.touches = 0;
+      /* v9: lastContact/prevContact/touches collapse into a dated history.
+         Nothing is discarded - every date already recorded becomes an entry. */
+      if (!Array.isArray(c.interactions)) {
+        var seed = [];
+        if (c.prevContact) seed.push(c.prevContact);
+        if (c.lastContact && c.lastContact !== c.prevContact) seed.push(c.lastContact);
+        c.interactions = seed;
+      }
+      c.interactions = dedupeDates(c.interactions);
+      c.lastContact = c.interactions.length ? c.interactions[c.interactions.length - 1] : "";
+      delete c.prevContact;
+      delete c.touches;
+      if (!Array.isArray(c.tierLog)) c.tierLog = [];
       if (c.snoozedUntil === undefined) c.snoozedUntil = "";
-      if (c.prevContact === undefined) c.prevContact = "";
       // Baseline for the reconnect clock when nothing has ever been logged.
       if (!c.tierSince) c.tierSince = c.lastContact || c.added || today();
-      delete c.interactions;
       if (!c.updatedAt) c.updatedAt = nowISO();
       if (!c.id) c.id = uid();
     });
@@ -244,7 +315,9 @@
     return '<span class="pot lv' + found.lvl + '" title="' + esc(found.key + " \u2014 " + found.blurb) +
       '" aria-label="Potential ' + found.lvl + ' of ' + POT_STEPS + '">' + bars + "</span>";
   }
-  function tierBadge(t) { return '<span class="badge t-' + t.toLowerCase() + '">' + t + "</span>"; }
+  function tierBadge(t) {
+    return '<span class="badge t-' + t.toLowerCase() + '" title="' + t + '">' + tierLabel(t) + "</span>";
+  }
   function digits(s) { return String(s || "").replace(/[^\d+]/g, ""); }
 
   function activeTriggers(text) {
@@ -304,6 +377,23 @@
       if (i.over > bestOver) { best = c; bestOver = i.over; }
     });
     return best;
+  }
+
+  /* Opening a contact is a deliberate act, so the timeline lives here rather
+     than on the list. Oldest first: it reads as the arc of the relationship. */
+  function historyHTML(c) {
+    var h = c.interactions || [];
+    var items = h.map(function (d, i) {
+      var gap = i > 0 ? daysBetween(h[i - 1], d) : null;
+      return '<li><span class="hdate">' + esc(d) + "</span>" +
+        (i === 0 ? '<span class="hgap">first logged</span>'
+                 : '<span class="hgap">' + gap + " days later</span>") + "</li>";
+    }).join("");
+    return '<div class="field"><label class="f">Interactions' +
+        (h.length ? ' <span class="n">' + h.length + "</span>" : "") + "</label>" +
+      (h.length ? '<ol class="history">' + items + "</ol>"
+                : '<p class="hint" style="margin:0 0 8px">Nothing logged yet.</p>') +
+      '<button class="btn-ghost sm" data-act="logpast" data-id="' + c.id + '">Log a past date</button></div>';
   }
 
   function rowHTML(c) {
@@ -371,6 +461,7 @@
           (c.phone ? '<a class="contactlink" href="tel:' + esc(digits(c.phone)) + '">Call</a>' : "") +
           (c.email ? '<a class="contactlink" href="mailto:' + esc(c.email) + '">Email</a>' : "") +
         "</div>" : "") +
+        historyHTML(c) +
         '<div class="field"><button class="btn-danger" data-act="delete" data-id="' + c.id + '">Delete contact</button></div>' +
       "</div></div>";
   }
@@ -475,7 +566,8 @@
         : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
       heading = tierFilter;
     } else {
-      var field = browseBy === "school" ? "school" : "company";
+      var field = browseBy === "school" ? "school"
+        : browseBy === "city" ? "location" : "company";
       base = groupFilter
         ? state.contacts.filter(function (c) { return (c[field] || "") === groupFilter; })
         : [];
@@ -498,12 +590,13 @@
     if (browseBy === "tier") {
       filtersHTML = TIERS.map(function (t) {
         var n = state.contacts.filter(function (c) { return c.tier === t && !c.pending; }).length;
-        return '<button class="filter' + (tierFilter === t ? " on" : "") + '" data-act="filter" data-val="' + t + '">' + t + '<span class="n">' + n + "</span></button>";
+        return '<button class="filter' + (tierFilter === t ? " on" : "") + '" data-act="filter" data-val="' + t + '" title="' + t + '">' + tierLabel(t) + '<span class="n">' + n + "</span></button>";
       }).join("") + (pending.length
         ? '<button class="filter' + (tierFilter === "Unsorted" ? " on" : "") + '" data-act="filter" data-val="Unsorted">Unsorted<span class="n">' + pending.length + "</span></button>"
         : "");
     } else {
-      var vals = groupValues(browseBy === "school" ? "school" : "company");
+      var vals = groupValues(browseBy === "school" ? "school"
+        : browseBy === "city" ? "location" : "company");
       filtersHTML = vals.length
         ? vals.map(function (v) {
             return '<button class="filter' + (groupFilter === v.key ? " on" : "") + '" data-act="group" data-val="' + esc(v.key) + '">' + esc(v.key) + '<span class="n">' + v.n + "</span></button>";
@@ -512,11 +605,11 @@
     }
 
     return '<div class="eyebrow">Everyone, sorted</div><h2>Tiering</h2>' +
-      '<p class="sub">Browse by tier, school, company, or role. Search covers names, notes, cities, and tags — misspellings are fine.</p>' +
+      subLine("Search covers names, notes and tags.") +
       onboardingHTML() +
       (pending.length ? '<div class="card warn rowsplit"><p class="note" style="margin:0">' + pending.length + ' imported contacts are waiting to be sorted.</p><button class="btn-ghost" data-act="gotoadd">Sort them →</button></div>' : "") +
       '<div class="seg" role="group" aria-label="Browse by">' +
-        ["tier", "school", "company"].map(function (b) {
+        ["tier", "school", "company", "city"].map(function (b) {
           return '<button class="' + (browseBy === b ? "on" : "") + '" data-act="browseby" data-val="' + b + '">By ' + b + "</button>";
         }).join("") +
       "</div>" +
@@ -566,7 +659,77 @@
     "</div>";
   }
 
+  function logTabsHTML() {
+    return '<div class="seg">' +
+      ["daily", "past"].map(function (k) {
+        var txt = k === "daily" ? "Daily" : "Past";
+        var sym = k === "daily" ? SYMBOLS.log : SYMBOLS.past;
+        var mode = setting("navMode", "text");
+        var shown = mode === "text" ? txt
+          : mode === "symbol" ? '<span class="sym" title="' + txt + '">' + sym + "</span>"
+          : '<span class="sym">' + sym + '</span><span class="symtext">' + txt + "</span>";
+        return '<button class="' + (logSub === k ? "on" : "") + '" data-act="logsub" data-val="' + k + '">' + shown + "</button>";
+      }).join("") + "</div>";
+  }
+
+  /* Which contacts were logged on a given day. */
+  function contactsOn(date) {
+    return state.contacts.filter(function (c) {
+      return (c.interactions || []).indexOf(date) !== -1;
+    }).sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+  }
+
+  function viewPast() {
+    if (!calMonth) { calMonth = new Date(); calMonth.setDate(1); }
+    var y = calMonth.getFullYear(), m = calMonth.getMonth();
+    var first = new Date(y, m, 1), startDow = first.getDay();
+    var daysInMonth = new Date(y, m + 1, 0).getDate();
+    var todayStr = today();
+
+    var counts = {};
+    state.contacts.forEach(function (c) {
+      (c.interactions || []).forEach(function (d) { counts[d] = (counts[d] || 0) + 1; });
+    });
+
+    var cells = "";
+    for (var i = 0; i < startDow; i++) cells += '<span class="cal-pad"></span>';
+    for (var d = 1; d <= daysInMonth; d++) {
+      var iso = y + "-" + String(m + 1).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+      var n = counts[iso] || 0;
+      var cls = "cal-day" + (n ? " has" : "") + (iso === calDay ? " sel" : "") + (iso === todayStr ? " today" : "");
+      cells += '<button class="' + cls + '" data-act="calday" data-val="' + iso + '">' + d +
+        (n ? '<i class="dot"></i>' : "") + "</button>";
+    }
+
+    var picked = calDay ? contactsOn(calDay) : [];
+
+    return '<div class="eyebrow">Past</div><h2>' + navLabel("past", "Past logs") + "</h2>" +
+      subLine("Days you logged someone. Tap a day to see who.") +
+      logTabsHTML() +
+      '<div class="calhead">' +
+        '<button class="btn-ghost sm" data-act="calprev">\u2039</button>' +
+        "<span>" + calMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" }) + "</span>" +
+        '<button class="btn-ghost sm" data-act="calnext">\u203A</button>' +
+      "</div>" +
+      '<div class="calgrid">' + ["S","M","T","W","T","F","S"].map(function (w) {
+        return '<span class="cal-dow">' + w + "</span>";
+      }).join("") + cells + "</div>" +
+      (calDay
+        ? (picked.length
+            ? '<h3 class="logsec">' + esc(calDay) + ' <span class="n">' + picked.length + "</span></h3>" +
+              '<div class="loglist">' + picked.map(function (c) {
+                return '<div class="logrow"><span class="body" data-act="opencontact" data-id="' + c.id + '">' +
+                  '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+                  '<span class="d">' + tierBadge(c.tier) + "</span></span>" +
+                  '<button class="logbtn undo" data-act="unlogday" data-id="' + c.id + '" data-val="' + calDay + '">Remove</button>' +
+                "</div>";
+              }).join("") + "</div>"
+            : '<div class="card"><p class="note" style="margin:0">Nothing logged on ' + esc(calDay) + ".</p></div>")
+        : "");
+  }
+
   function viewLog() {
+    if (logSub === "past") return viewPast();
     var t = today();
     var active = state.contacts.filter(function (c) { return !c.pending; });
     var loggedToday = active.filter(function (c) { return c.lastContact === t; });
@@ -575,9 +738,9 @@
       ? searchContacts(active, logQuery).filter(function (c) { return c.lastContact !== t; }).slice(0, 15)
       : [];
 
-    return '<div class="eyebrow">Today</div><h2>Daily log</h2>' +
-      '<p class="sub">Run back through the day and log whoever you actually had a real conversation with. ' +
-      'You decide what counts as significant \u2014 this is the only thing that feeds Reconnect.</p>' +
+    return '<div class="eyebrow">Today</div><h2>' + navLabel("log", "Daily log") + "</h2>" +
+      subLine("Log whoever you had a real conversation with.") +
+      logTabsHTML() +
 
       '<div class="searchwrap"><input type="search" id="logSearch" value="' + esc(logQuery) +
         '" placeholder="Search a name to log them" autocomplete="off" enterkeyhint="search">' +
@@ -632,9 +795,7 @@
     }).length;
 
     return '<div class="eyebrow">Opportunities</div><h2>Worth reaching out to</h2>' +
-      '<p class="sub">People you rated as worth deepening, who you have not logged in a while. ' +
-      'Anyone marked Low potential, or never rated, is left out on purpose \u2014 ' +
-      'and the more potential you gave someone, the sooner they show up.</p>' +
+      subLine("Rated worth deepening, not logged lately.") +
 
       (!rated
         ? '<div class="card"><h3>Nothing rated yet</h3><p class="note">Open anyone and set ' +
@@ -671,7 +832,7 @@
     }
 
     return '<div class="eyebrow">Everything, in one place</div><h2>Settings</h2>' +
-      '<p class="sub">Nothing here changes your contacts \u2014 only what the app shows you and how it behaves.</p>' +
+      subLine("Nothing here changes your contacts \u2014 only what the app shows you and how it behaves.") +
 
       /* --- what a row shows --- */
       '<div class="card"><h3>Row subtitle</h3>' +
@@ -720,6 +881,37 @@
       "</div>" +
 
       /* --- backup, moved out of Add --- */
+      '<div class="card"><h3>Trends</h3>' +
+        '<p class="note">Three months of activity. Not a scoreboard.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="opentrends">View trends</button></div>' +
+      "</div>" +
+
+      '<div class="card"><h3>Display</h3>' +
+        '<p class="note">Symbol mode makes the app unreadable at a glance to anyone else.</p>' +
+        '<div class="field"><label class="f">Navigation</label><div class="chips">' +
+          [["text", "Text"], ["both", "Symbol + text"], ["symbol", "Symbol"]].map(function (o) {
+            return '<button class="chip' + (setting("navMode", "text") === o[0] ? " on" : "") +
+              '" data-act="navmode" data-val="' + o[0] + '">' + o[1] + "</button>";
+          }).join("") +
+        "</div></div>" +
+        '<div class="field"><label class="f">Tiers</label><div class="chips">' +
+          [["name", "Names"], ["symbol", "Symbols"], ["emoji", "Emoji"]].map(function (o) {
+            return '<button class="chip' + (setting("tierMode", "name") === o[0] ? " on" : "") +
+              '" data-act="tiermode" data-val="' + o[0] + '">' + o[1] + "</button>";
+          }).join("") +
+        "</div></div>" +
+        '<div class="field"><label class="f">Subheadings</label><div class="chips">' +
+          [["on", "Show"], ["off", "Hide"]].map(function (o) {
+            return '<button class="chip' + (setting("showSub", "on") === o[0] ? " on" : "") +
+              '" data-act="showsub" data-val="' + o[0] + '">' + o[1] + "</button>";
+          }).join("") +
+        "</div></div>" +
+        '<p class="hint">' + SYMBOLS.tiering + " Tiering &nbsp; " + SYMBOLS.log + " Log &nbsp; " +
+          SYMBOLS.past + " Past &nbsp; " + SYMBOLS.reconnect + " Reach &nbsp; " + SYMBOLS.add + " Add<br>" +
+          TIER_SYMBOL.Close + " Close &nbsp; " + TIER_SYMBOL.Middle + " Middle &nbsp; " +
+          TIER_SYMBOL.Acquaintance + " Acquaintance &nbsp; " + TIER_SYMBOL.Networking + " Networking</p>" +
+      "</div>" +
+
       '<div class="card"><h3>Backup</h3>' +
         '<p class="note">Your ' + total + ' contacts live in this browser only. Export writes a CSV you can ' +
         'keep in cloud storage; importing it back restores everything.</p>' +
@@ -740,152 +932,72 @@
       "</div>";
   }
 
-  function viewTravel() {
-    var q = travelQuery.trim();
-    var list = [];
-    if (q) {
-      list = state.contacts.filter(function (c) { return !c.pending && fuzzyHit(c.location || "", q); });
-      list.sort(function (a, b) { return TIERS.indexOf(a.tier) - TIERS.indexOf(b.tier); });
-    }
-    var staleCount = list.filter(function (c) {
-      var m = monthsSince(c.locationConfirmed);
-      return m === null || m >= 6;
-    }).length;
-    var cities = groupValues("location");
+  /* Insights counts only what happened in-app: contacts you entered yourself
+     and tier moves you made. Bulk imports are excluded so one CSV cannot make
+     a month look like you met four hundred people. */
+  function monthKey(iso) { return (iso || "").slice(0, 7); }
 
-    return '<div class="eyebrow">Who is where</div><h2>Travel</h2>' +
-      '<p class="sub">Type a city to see everyone there, Close tier first. Cities go stale — confirm them as you learn where people actually are.</p>' +
-      '<div class="searchwrap"><input type="search" id="travelSearch" value="' + esc(travelQuery) + '" placeholder="Boston, SF, Philadelphia…" autocomplete="off" enterkeyhint="search"></div>' +
-      (!q
-        ? '<p class="note">Cities already tagged:</p><div class="chips">' +
-            (cities.length
-              ? cities.map(function (c) { return '<button class="chip" data-act="setcity" data-val="' + esc(c.key) + '">' + esc(c.key) + ' <span style="opacity:.5">' + c.n + "</span></button>"; }).join("")
-              : '<span class="note">None yet — add a city on any contact.</span>') +
-          "</div>"
-        : list.length
-          ? (staleCount ? '<p class="hint stale" style="margin-bottom:10px">' + staleCount + " of these " + (staleCount === 1 ? "hasn't" : "haven't") + " had a city confirmed recently — worth checking before you assume.</p>" : "") +
-            '<div class="rowlist">' + list.map(rowHTML).join("") + "</div>"
-          : '<div class="empty">No one tagged near “' + esc(q) + '” yet.</div>');
-  }
+  function insightsFor(offset) {
+    var d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - (offset || 0));
+    var key = d.toISOString().slice(0, 7);
 
-  /* ---------- import preview ---------- */
-  function normName(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
-  function dupeKeys(c) {
-    var keys = [];
-    var n = normName(c.name);
-    var p = digits(c.phone).slice(-10);
-    var e = String(c.email || "").toLowerCase().trim();
-    if (n && p) keys.push("np:" + n + ":" + p);
-    if (n && e) keys.push("ne:" + n + ":" + e);
-    if (p) keys.push("p:" + p);
-    if (e) keys.push("e:" + e);
-    if (n) keys.push("n:" + n);
-    return keys;
-  }
-  function buildDupeIndex() {
-    var idx = {};
+    var added = state.contacts.filter(function (c) { return monthKey(c.added) === key; });
+    var moves = [];
     state.contacts.forEach(function (c) {
-      dupeKeys(c).forEach(function (k) { if (!idx[k]) idx[k] = c; });
+      (c.tierLog || []).forEach(function (m) {
+        if (monthKey(m.date) === key) moves.push({ c: c, from: m.from, to: m.to });
+      });
     });
-    return idx;
-  }
-
-  function previewGroups(P) {
-    var field = P.groupBy;
-    var map = {};
-    P.rows.forEach(function (r) {
-      if (r.dupe) return;
-      if (P.respectFile && hadTier(r)) return; // already decided in the file
-      var v = (field === "school" ? r.c.school : field === "company" ? r.c.company : "") || "(none)";
-      map[v] = (map[v] || 0) + 1;
-    });
-    return Object.keys(map).sort(function (a, b) { return map[b] - map[a] || a.localeCompare(b); })
-      .map(function (k) { return { key: k, n: map[k] }; });
-  }
-
-  // parseCSV marks rows that arrived with a valid tier as pending:false.
-  function hadTier(r) { return !r.c.pending; }
-
-  function effTier(P, r) {
-    // A tier written in the file is per-person data the user already decided.
-    // Re-importing your own export must not flatten it under a bulk rule.
-    if (P.respectFile && hadTier(r)) return r.c.tier;
-    var field = P.groupBy;
-    var v = (field === "school" ? r.c.school : field === "company" ? r.c.company : "") || "(none)";
-    if (P.groups[v]) return P.groups[v];
-    return P.defaultTier;
-  }
-
-  function viewImportPreview() {
-    var P = importPreview;
-    var newRows = P.rows.filter(function (r) { return !r.dupe; });
-    var dupes = P.rows.length - newRows.length;
-    var groups = previewGroups(P);
-
-    var counts = {};
-    newRows.forEach(function (r) {
-      var t = effTier(P, r);
-      counts[t] = (counts[t] || 0) + 1;
+    var logged = 0;
+    state.contacts.forEach(function (c) {
+      (c.interactions || []).forEach(function (dt) { if (monthKey(dt) === key) logged++; });
     });
 
-    var preTiered = newRows.filter(hadTier).length;
-    var needTier = newRows.length - (P.respectFile ? preTiered : 0);
+    var rank = { Acquaintance: 0, Networking: 0, Middle: 1, Close: 2 };
+    var deepened = moves.filter(function (m) { return rank[m.to] > rank[m.from]; });
+    return {
+      key: key,
+      monthName: d.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+      monthShort: d.toLocaleDateString(undefined, { month: "short" }),
+      added: added, moves: moves, deepened: deepened, logged: logged
+    };
+  }
 
-    return '<div class="eyebrow">Review before importing</div><h2>' + P.rows.length + ' rows read</h2>' +
-      '<p class="sub">Nothing has been saved yet. Set tiers by group, then confirm.</p>' +
+  function viewInsights() {
+    var now = insightsFor(0), prev = insightsFor(1), prev2 = insightsFor(2);
 
-      (preTiered
-        ? '<div class="card"><h3>' + preTiered + ' rows already have a tier</h3>' +
-          '<p class="note">This file came with tiers filled in — likely your own export.</p>' +
-          '<div class="chips">' +
-            [[true, "Keep the file's tiers"], [false, "Override them below"]].map(function (o) {
-              return '<button class="chip' + (P.respectFile === o[0] ? " on" : "") + '" data-act="pvrespect" data-val="' + o[0] + '">' + o[1] + "</button>";
-            }).join("") +
-          "</div></div>"
+    function trend(label, a, b, c) {
+      var dir = a === b ? "level" : a > b ? "up" : "down";
+      return '<div class="trend"><div class="trendl">' + label + "</div>" +
+        '<div class="trendrow"><span class="t2">' + prev2.monthShort + " " + c + "</span>" +
+        '<span class="t2">' + prev.monthShort + " " + b + "</span>" +
+        '<span class="t1 ' + dir + '">' + now.monthShort + " " + a + "</span></div></div>";
+    }
+
+    return '<button class="back" data-act="settings">Back to settings</button>' +
+      '<div class="eyebrow">' + esc(now.monthName) + "</div><h2>Trends</h2>" +
+      '<p class="sub">Three months of activity, for noticing patterns. These are not scores. ' +
+      'Fewer new people can mean you went deeper with the ones you have, and none of this sees how any of it felt.</p>' +
+
+      '<div class="trends">' +
+        trend("New people entered", now.added.length, prev.added.length, prev2.added.length) +
+        trend("Moved closer", now.deepened.length, prev.deepened.length, prev2.deepened.length) +
+        trend("Conversations logged", now.logged, prev.logged, prev2.logged) +
+      "</div>" +
+
+      (now.deepened.length
+        ? '<h3 class="logsec">Moved closer this month</h3><div class="loglist">' +
+          now.deepened.map(function (m) {
+            return '<div class="logrow"><span class="body" data-act="opencontact" data-id="' + m.c.id + '">' +
+              '<span class="t">' + (esc(m.c.name) || "Unnamed") + "</span>" +
+              '<span class="d">' + esc(m.from) + " \u2192 " + esc(m.to) + "</span></span></div>";
+          }).join("") + "</div>"
         : "") +
 
-      '<div class="card"><h3>Duplicates</h3>' +
-        (dupes
-          ? '<p class="note">' + dupes + ' of these already exist here (matched on name, phone, or email).</p>' +
-            '<div class="chips">' +
-              [["skip", "Skip them"], ["update", "Update mine with the new info"]].map(function (o) {
-                return '<button class="chip' + (P.dupeMode === o[0] ? " on" : "") + '" data-act="pvdupe" data-val="' + o[0] + '">' + o[1] + "</button>";
-              }).join("") +
-            "</div>"
-          : '<p class="ok">None — all ' + P.rows.length + " are new.</p>") +
-      "</div>" +
-
-      '<div class="card"><h3>Tier for the ' + needTier + ' new contact' + (needTier === 1 ? "" : "s") + ' without one</h3>' +
-        '<p class="note">' + (needTier ? "Everyone without a tier in the file starts here. You can override any group below." : "Nothing to assign — every new row already has a tier.") + '</p>' +
-        '<div class="chips">' +
-          TIERS.concat(["Unsorted"]).map(function (t) {
-            return '<button class="chip' + (P.defaultTier === t ? " on" : "") + '" data-act="pvdefault" data-val="' + t + '">' + t + "</button>";
-          }).join("") +
-        "</div>" +
-        '<div class="field"><label class="f">Group by</label><div class="seg">' +
-          ["school", "company", "none"].map(function (g) {
-            return '<button class="' + (P.groupBy === g ? "on" : "") + '" data-act="pvgroupby" data-val="' + g + '">' + g + "</button>";
-          }).join("") +
-        "</div></div>" +
-        (P.groupBy !== "none"
-          ? '<div class="pvgroups">' + groups.map(function (g) {
-              var cur = P.groups[g.key] || "";
-              return '<div class="pvrow"><span class="pvname">' + esc(g.key) + '<span class="n">' + g.n + "</span></span>" +
-                '<div class="chips">' + TIERS.concat(["Unsorted"]).map(function (t) {
-                  return '<button class="chip sm' + (cur === t ? " on" : "") + '" data-act="pvgroup" data-g="' + esc(g.key) + '" data-val="' + t + '">' + t + "</button>";
-                }).join("") + "</div></div>";
-            }).join("") + "</div>"
-          : "") +
-      "</div>" +
-
-      '<div class="card"><h3>Result</h3><p class="note">' +
-        TIERS.concat(["Unsorted"]).filter(function (t) { return counts[t]; })
-          .map(function (t) { return "<strong>" + counts[t] + "</strong> " + t; }).join(" · ") +
-        (dupes ? " · <strong>" + dupes + "</strong> duplicate" + (dupes === 1 ? "" : "s") + " " + (P.dupeMode === "skip" ? "skipped" : "updated") : "") +
-      "</p>" +
-        '<div class="field"><button class="btn" data-act="pvconfirm">Import ' + newRows.length + " contacts</button></div>" +
-        '<div class="field"><button class="btn-ghost" data-act="pvcancel">Cancel</button></div>' +
-      "</div>";
+      '<p class="hint" style="margin-top:18px">Counts people entered in the app and tier changes made here. ' +
+      'Imported contacts are excluded.</p>';
   }
 
   /* ---------- cleanup: bulk triage of contacts that no longer matter ---------- */
@@ -911,8 +1023,7 @@
     var shown = searchContacts(list, cleanup.q || "");
 
     return '<div class="eyebrow">Prune the list</div><h2>Clean up</h2>' +
-      '<p class="sub">Tap anyone you no longer want. Nothing is deleted until you press the button at the bottom, ' +
-      'and you get one undo after that. People with a school or company tag are hidden by default — those are your recent ones.</p>' +
+      subLine("Tap anyone you no longer want. Nothing is deleted until you confirm.") +
 
       '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
         var n = state.contacts.filter(function (c) { return !c.pending && f.test(c); }).length;
@@ -959,7 +1070,7 @@
     var cur = pending[queueIndex];
 
     return '<div class="eyebrow">Tonight\'s log</div><h2>Add</h2>' +
-      '<p class="sub">Who did you meet? A name and a tier is enough. Potential and notes take five more seconds and are worth it while it is fresh.</p>' +
+      subLine("Who did you meet? A name and a tier is enough. Potential and notes take five more seconds and are worth it while it is fresh.") +
       backupNagHTML() +
       '<div class="card"><h3>Just met someone</h3>' +
         '<input type="text" id="qName" placeholder="Name" autocomplete="off" enterkeyhint="done">' +
@@ -1061,7 +1172,14 @@
     var cpill = document.getElementById("coldPill");
     if (cpill) { cpill.hidden = !coldN; cpill.textContent = coldN; }
 
+    var TAB_TEXT = { tiering: "Tiering", log: "Log", reconnect: "Reach", add: "Add" };
     var tabs = document.querySelectorAll(".tab");
+    for (var t = 0; t < tabs.length; t++) {
+      var key = tabs[t].dataset.tab, pill = tabs[t].querySelector(".pill");
+      tabs[t].firstChild && (tabs[t].textContent = "");
+      tabs[t].insertAdjacentHTML("afterbegin", navLabel(key, TAB_TEXT[key] || key));
+      if (pill) tabs[t].appendChild(pill);
+    }
     for (var i = 0; i < tabs.length; i++) {
       var on = tabs[i].dataset.tab === tab;
       tabs[i].classList.toggle("on", on);
@@ -1078,9 +1196,10 @@
       tab === "tiering" ? viewTiering() :
       cleanup ? viewCleanup() :
       tab === "settings" ? viewSettings() :
+      tab === "insights" ? viewInsights() :
       tab === "log" ? viewLog() :
       tab === "reconnect" ? viewReconnect() :
-      tab === "travel" ? viewTravel() : viewAdd();
+      viewAdd();
 
     var ts = document.getElementById("tierSearch");
     if (ts && tab === "tiering") {
@@ -1093,10 +1212,6 @@
     var cl = document.getElementById("clSearch");
     if (cl && cleanup) {
       cl.addEventListener("input", function () { cleanup.q = cl.value; renderListOnly(); });
-    }
-    var tv = document.getElementById("travelSearch");
-    if (tv && tab === "travel") {
-      tv.addEventListener("input", function () { travelQuery = tv.value; renderListOnly(); });
     }
     var fi = document.getElementById("fileIn");
     if (fi) fi.addEventListener("change", handleFile);
@@ -1207,14 +1322,29 @@
       case "filterclose": tab = "tiering"; browseBy = "tier"; tierFilter = "Close"; render(); break;
       case "group": groupFilter = groupFilter === val ? "" : val; tierQuery = ""; openId = null; orderSnapshot = null; render(); break;
       case "clearsearch": tierQuery = ""; searchAll = false; render(); break;
+      case "logsub": logSub = val; calDay = ""; render(); break;
+      case "calprev": calMonth.setMonth(calMonth.getMonth() - 1); calDay = ""; render(); break;
+      case "calnext": calMonth.setMonth(calMonth.getMonth() + 1); calDay = ""; render(); break;
+      case "calday": calDay = (calDay === val ? "" : val); render(); break;
+      case "unlogday": {
+        var uc = byId(id);
+        if (uc) { unlogInteraction(uc, val); touch(uc); commit(); toast("Removed"); }
+        break;
+      }
+      case "opentrends": tab = "insights"; render(); break;
+      case "navmode": state.settings.navMode = val; commit(); break;
+      case "tiermode": state.settings.tierMode = val; commit(); break;
+      case "showsub": state.settings.showSub = val; commit(); break;
       case "resort": orderSnapshot = null; render(); toast("Re-sorted by potential"); break;
       case "toggleall": searchAll = !searchAll; orderSnapshot = null; render(); break;
       case "gotoadd": tab = "add"; render(); break;
       case "dismissonboard": state.settings.onboarded = true; commit(); break;
-      case "setcity": travelQuery = val; render(); break;
 
       case "settier":
-        if (c.tier !== val) c.tierSince = today();   // new tier, fresh clock
+        if (c.tier !== val) {
+          c.tierSince = today();                     // new tier, fresh clock
+          c.tierLog = (c.tierLog || []).concat({ date: today(), from: c.tier, to: val });
+        }
         c.tier = val; c.pending = false; c.snoozedUntil = "";
         touch(c); commit();
         break;
@@ -1233,21 +1363,31 @@
       case "confirmloc": c.locationConfirmed = today(); touch(c); commit(); toast("City confirmed"); break;
       case "marktouch": case "logtalk": {
         var first = (c.name || "").split(" ")[0];
-        if (c.lastContact === today()) {          // tapped again — undo a misclick
-          c.lastContact = c.prevContact || "";
-          c.touches = Math.max(0, (c.touches || 1) - 1);
+        if (c.lastContact === today()) {          // tapped again, undo a misclick
+          unlogInteraction(c);
           touch(c); commit();
           toast("Unmarked " + first);
           break;
         }
-        c.prevContact = c.lastContact || "";
-        c.lastContact = today();
+        logInteraction(c);
         c.snoozedUntil = "";
-        c.touches = (c.touches || 0) + 1;
         touch(c);
         if (nudgeFor === c.id) nudgeFor = null;
         commit();
         toast("Marked " + first + " today");
+        break;
+      }
+      case "logpast": {
+        var pd = prompt("Date of that conversation (YYYY-MM-DD)", today());
+        if (!pd) break;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(pd) || isNaN(new Date(pd).getTime())) {
+          toast("Use the format 2026-08-14");
+          break;
+        }
+        if (daysBetween(pd, today()) < 0) { toast("That date is in the future"); break; }
+        logInteraction(c, pd);
+        touch(c); commit();
+        toast("Logged " + (c.name || "").split(" ")[0] + " on " + pd);
         break;
       }
       case "nudgesnooze": {
