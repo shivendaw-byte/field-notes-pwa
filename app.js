@@ -50,7 +50,7 @@
   var SNOOZE_DAYS = 10;
   var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "8.0";
+  var APP_VERSION = "8.1";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -441,7 +441,14 @@
       heading = groupFilter || "";
     }
 
-    var list = searchContacts(base, tierQuery);
+    /* Potential is the reason this app exists, so it decides the order: highest
+       first, unrated last, alphabetical within a level so the list is stable.
+       Applies to browsing and to search results alike. */
+    var list = searchContacts(base, tierQuery).slice().sort(function (a, b) {
+      var pa = potLevel(a.potential), pb = potLevel(b.potential);
+      if (pa !== pb) return pb - pa;
+      return (a.name || "").localeCompare(b.name || "");
+    });
 
     // Never hide matches silently: if this tier has none but others do, say so.
     var elsewhere = 0;
