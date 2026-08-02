@@ -55,7 +55,8 @@
      glancing at the screen can read what any of it is. */
   var SYMBOLS = {
     tiering: "\u227B", log: "\u03A3", past: "\u222B",
-    reconnect: "\u22C8", add: "\u2295", insights: "\u0394"
+    reconnect: "\u22C8", add: "\u2295", insights: "\u0394",
+    settings: "\u2699", cleanup: "\u2296"
   };
   /* Close, Middle and Acquaintance are degrees of closeness. Networking is a
      different purpose entirely, so it gets a connector rather than a degree. */
@@ -71,6 +72,15 @@
     if (mode === "symbol") return '<span class="sym" title="' + esc(text) + '">' + sym + "</span>";
     return '<span class="sym">' + sym + '</span><span class="symtext">' + esc(text) + "</span>";
   }
+  /* Symbol mode is for when you already know the app: the eyebrow and the
+     spelled-out title are both noise at that point. */
+  function pageHead(key, eyebrow, title) {
+    if (setting("navMode", "text") === "symbol" && SYMBOLS[key]) {
+      return '<h2 class="symhead" title="' + esc(title) + '">' + SYMBOLS[key] + "</h2>";
+    }
+    return '<div class="eyebrow">' + esc(eyebrow) + "</div><h2>" + navLabel(key, title) + "</h2>";
+  }
+
   function tierLabel(t) {
     var mode = setting("tierMode", "name");
     if (mode === "symbol") return TIER_SYMBOL[t] || t;
@@ -83,7 +93,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.1";
+  var APP_VERSION = "9.2";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -379,20 +389,18 @@
     return best;
   }
 
-  /* Opening a contact is a deliberate act, so the timeline lives here rather
-     than on the list. Oldest first: it reads as the arc of the relationship. */
+  /* Only the most recent interaction lives on the profile. The full history is
+     in the Past calendar, so a contact never reads as a tally of what you owe. */
   function historyHTML(c) {
     var h = c.interactions || [];
-    var items = h.map(function (d, i) {
-      var gap = i > 0 ? daysBetween(h[i - 1], d) : null;
-      return '<li><span class="hdate">' + esc(d) + "</span>" +
-        (i === 0 ? '<span class="hgap">first logged</span>'
-                 : '<span class="hgap">' + gap + " days later</span>") + "</li>";
-    }).join("");
-    return '<div class="field"><label class="f">Interactions' +
-        (h.length ? ' <span class="n">' + h.length + "</span>" : "") + "</label>" +
-      (h.length ? '<ol class="history">' + items + "</ol>"
-                : '<p class="hint" style="margin:0 0 8px">Nothing logged yet.</p>') +
+    var last = h.length ? h[h.length - 1] : "";
+    var ago = last ? daysSince(last) : null;
+    var line = !last ? "Nothing logged yet."
+      : ago === 0 ? "Last spoke today."
+      : ago === 1 ? "Last spoke yesterday."
+      : "Last spoke " + ago + " days ago, on " + last + ".";
+    return '<div class="field"><label class="f">Last interaction</label>' +
+      '<p class="hint" style="margin:0 0 8px">' + esc(line) + "</p>" +
       '<button class="btn-ghost sm" data-act="logpast" data-id="' + c.id + '">Log a past date</button></div>';
   }
 
@@ -604,7 +612,7 @@
         : '<span class="note">No ' + browseBy + ' tags yet — add them on any contact.</span>';
     }
 
-    return '<div class="eyebrow">Everyone, sorted</div><h2>Tiering</h2>' +
+    return pageHead("tiering", "Everyone, sorted", "Tiering") +
       subLine("Search covers names, notes and tags.") +
       onboardingHTML() +
       (pending.length ? '<div class="card warn rowsplit"><p class="note" style="margin:0">' + pending.length + ' imported contacts are waiting to be sorted.</p><button class="btn-ghost" data-act="gotoadd">Sort them →</button></div>' : "") +
@@ -703,7 +711,7 @@
 
     var picked = calDay ? contactsOn(calDay) : [];
 
-    return '<div class="eyebrow">Past</div><h2>' + navLabel("past", "Past logs") + "</h2>" +
+    return pageHead("past", "Past", "Past logs") +
       subLine("Days you logged someone. Tap a day to see who.") +
       logTabsHTML() +
       '<div class="calhead">' +
@@ -738,7 +746,7 @@
       ? searchContacts(active, logQuery).filter(function (c) { return c.lastContact !== t; }).slice(0, 15)
       : [];
 
-    return '<div class="eyebrow">Today</div><h2>' + navLabel("log", "Daily log") + "</h2>" +
+    return pageHead("log", "Today", "Daily log") +
       subLine("Log whoever you had a real conversation with.") +
       logTabsHTML() +
 
@@ -794,7 +802,7 @@
       return potLevel(c.potential) >= MIN_POTENTIAL && !c.pending;
     }).length;
 
-    return '<div class="eyebrow">Opportunities</div><h2>Worth reaching out to</h2>' +
+    return pageHead("reconnect", "Opportunities", "Worth reaching out to") +
       subLine("Rated worth deepening, not logged lately.") +
 
       (!rated
@@ -805,8 +813,8 @@
           ? '<div class="loglist">' + list.map(reachRowHTML).join("") + "</div>" +
             '<p class="hint" style="margin-top:14px">' + rated + " people are rated worth deepening. " +
             "Logging someone in the Daily log clears them from here.</p>"
-          : '<div class="card ok-card"><h3>Nothing to chase</h3><p class="note">All ' + rated +
-            " of the people you rated worth deepening have been logged recently.</p></div>");
+          : '<div class="card ok-card"><h3>All current</h3><p class="note">All ' + rated +
+            " of the people you rated worth deepening were logged recently.</p></div>");
   }
 
   var SUBTITLE_FIELDS = [
@@ -831,7 +839,7 @@
         '<span class="switch' + (on ? " on" : "") + '"><i></i></span></button>';
     }
 
-    return '<div class="eyebrow">Everything, in one place</div><h2>Settings</h2>' +
+    return pageHead("settings", "Everything, in one place", "Settings") +
       subLine("Nothing here changes your contacts \u2014 only what the app shows you and how it behaves.") +
 
       /* --- what a row shows --- */
@@ -932,6 +940,188 @@
       "</div>";
   }
 
+  function normName(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+  function dupeKeys(c) {
+    var keys = [];
+    var n = normName(c.name);
+    var p = digits(c.phone).slice(-10);
+    var e = String(c.email || "").toLowerCase().trim();
+    if (n && p) keys.push("np:" + n + ":" + p);
+    if (n && e) keys.push("ne:" + n + ":" + e);
+    if (p) keys.push("p:" + p);
+    if (e) keys.push("e:" + e);
+    if (n) keys.push("n:" + n);
+    return keys;
+  }
+  function buildDupeIndex() {
+    var idx = {};
+    state.contacts.forEach(function (c) {
+      dupeKeys(c).forEach(function (k) { if (!idx[k]) idx[k] = c; });
+    });
+    return idx;
+  }
+
+  function previewGroups(P) {
+    var field = P.groupBy;
+    var map = {};
+    P.rows.forEach(function (r) {
+      if (r.dupe) return;
+      if (P.respectFile && hadTier(r)) return; // already decided in the file
+      var v = (field === "school" ? r.c.school : field === "company" ? r.c.company : "") || "(none)";
+      map[v] = (map[v] || 0) + 1;
+    });
+    return Object.keys(map).sort(function (a, b) { return map[b] - map[a] || a.localeCompare(b); })
+      .map(function (k) { return { key: k, n: map[k] }; });
+  }
+
+  // parseCSV marks rows that arrived with a valid tier as pending:false.
+  function hadTier(r) { return !r.c.pending; }
+
+  function effTier(P, r) {
+    // A tier written in the file is per-person data the user already decided.
+    // Re-importing your own export must not flatten it under a bulk rule.
+    if (P.respectFile && hadTier(r)) return r.c.tier;
+    var field = P.groupBy;
+    var v = (field === "school" ? r.c.school : field === "company" ? r.c.company : "") || "(none)";
+    if (P.groups[v]) return P.groups[v];
+    return P.defaultTier;
+  }
+
+  function viewImportPreview() {
+    var P = importPreview;
+    var newRows = P.rows.filter(function (r) { return !r.dupe; });
+    var dupes = P.rows.length - newRows.length;
+    var groups = previewGroups(P);
+
+    var counts = {};
+    newRows.forEach(function (r) {
+      var t = effTier(P, r);
+      counts[t] = (counts[t] || 0) + 1;
+    });
+
+    var preTiered = newRows.filter(hadTier).length;
+    var needTier = newRows.length - (P.respectFile ? preTiered : 0);
+
+    return '<div class="eyebrow">Review before importing</div><h2>' + P.rows.length + ' rows read</h2>' +
+      '<p class="sub">Nothing has been saved yet. Set tiers by group, then confirm.</p>' +
+
+      (preTiered
+        ? '<div class="card"><h3>' + preTiered + ' rows already have a tier</h3>' +
+          '<p class="note">This file came with tiers filled in — likely your own export.</p>' +
+          '<div class="chips">' +
+            [[true, "Keep the file's tiers"], [false, "Override them below"]].map(function (o) {
+              return '<button class="chip' + (P.respectFile === o[0] ? " on" : "") + '" data-act="pvrespect" data-val="' + o[0] + '">' + o[1] + "</button>";
+            }).join("") +
+          "</div></div>"
+        : "") +
+
+      '<div class="card"><h3>Duplicates</h3>' +
+        (dupes
+          ? '<p class="note">' + dupes + ' of these already exist here (matched on name, phone, or email).</p>' +
+            '<div class="chips">' +
+              [["skip", "Skip them"], ["update", "Update mine with the new info"]].map(function (o) {
+                return '<button class="chip' + (P.dupeMode === o[0] ? " on" : "") + '" data-act="pvdupe" data-val="' + o[0] + '">' + o[1] + "</button>";
+              }).join("") +
+            "</div>"
+          : '<p class="ok">None — all ' + P.rows.length + " are new.</p>") +
+      "</div>" +
+
+      '<div class="card"><h3>Tier for the ' + needTier + ' new contact' + (needTier === 1 ? "" : "s") + ' without one</h3>' +
+        '<p class="note">' + (needTier ? "Everyone without a tier in the file starts here. You can override any group below." : "Nothing to assign — every new row already has a tier.") + '</p>' +
+        '<div class="chips">' +
+          TIERS.concat(["Unsorted"]).map(function (t) {
+            return '<button class="chip' + (P.defaultTier === t ? " on" : "") + '" data-act="pvdefault" data-val="' + t + '">' + t + "</button>";
+          }).join("") +
+        "</div>" +
+        '<div class="field"><label class="f">Group by</label><div class="seg">' +
+          ["school", "company", "none"].map(function (g) {
+            return '<button class="' + (P.groupBy === g ? "on" : "") + '" data-act="pvgroupby" data-val="' + g + '">' + g + "</button>";
+          }).join("") +
+        "</div></div>" +
+        (P.groupBy !== "none"
+          ? '<div class="pvgroups">' + groups.map(function (g) {
+              var cur = P.groups[g.key] || "";
+              return '<div class="pvrow"><span class="pvname">' + esc(g.key) + '<span class="n">' + g.n + "</span></span>" +
+                '<div class="chips">' + TIERS.concat(["Unsorted"]).map(function (t) {
+                  return '<button class="chip sm' + (cur === t ? " on" : "") + '" data-act="pvgroup" data-g="' + esc(g.key) + '" data-val="' + t + '">' + t + "</button>";
+                }).join("") + "</div></div>";
+            }).join("") + "</div>"
+          : "") +
+      "</div>" +
+
+      '<div class="card"><h3>Result</h3><p class="note">' +
+        TIERS.concat(["Unsorted"]).filter(function (t) { return counts[t]; })
+          .map(function (t) { return "<strong>" + counts[t] + "</strong> " + t; }).join(" · ") +
+        (dupes ? " · <strong>" + dupes + "</strong> duplicate" + (dupes === 1 ? "" : "s") + " " + (P.dupeMode === "skip" ? "skipped" : "updated") : "") +
+      "</p>" +
+        '<div class="field"><button class="btn" data-act="pvconfirm">Import ' + newRows.length + " contacts</button></div>" +
+        '<div class="field"><button class="btn-ghost" data-act="pvcancel">Cancel</button></div>' +
+      "</div>";
+  }
+
+  /* ---------- cleanup: bulk triage of contacts that no longer matter ---------- */
+  var CLEAN_FILTERS = [
+    { key: "untagged", label: "No school or company",
+      test: function (c) { return !(c.school || "").trim() && !(c.company || "").trim(); } },
+    { key: "acq", label: "Acquaintance only",
+      test: function (c) { return c.tier === "Acquaintance"; } },
+    { key: "nevermarked", label: "Never talked to",
+      test: function (c) { return !c.lastContact; } },
+    { key: "all", label: "Everyone", test: function () { return true; } }
+  ];
+
+  function cleanupCandidates() {
+    var f = CLEAN_FILTERS.filter(function (x) { return x.key === cleanup.filter; })[0] || CLEAN_FILTERS[0];
+    return state.contacts.filter(function (c) { return !c.pending && f.test(c); })
+      .sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+  }
+
+  function viewCleanup() {
+    var list = cleanupCandidates();
+    var markedIds = Object.keys(cleanup.marked).filter(function (k) { return cleanup.marked[k]; });
+    var shown = searchContacts(list, cleanup.q || "");
+
+    return '<div class="eyebrow">Prune the list</div><h2>Clean up</h2>' +
+      '<p class="sub">Tap anyone you no longer want. Nothing is deleted until you press the button at the bottom, ' +
+      'and you get one undo after that. People with a school or company tag are hidden by default — those are your recent ones.</p>' +
+
+      '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
+        var n = state.contacts.filter(function (c) { return !c.pending && f.test(c); }).length;
+        return '<button class="filter' + (cleanup.filter === f.key ? " on" : "") + '" data-act="clfilter" data-val="' + f.key + '">' +
+          f.label + '<span class="n">' + n + "</span></button>";
+      }).join("") + "</div>" +
+
+      '<div class="searchwrap"><input type="search" id="clSearch" value="' + esc(cleanup.q || "") +
+        '" placeholder="Filter these by name…" autocomplete="off"></div>' +
+
+      '<div class="rowsplit" style="margin-bottom:10px">' +
+        '<p class="hint" style="margin:0">' + shown.length + " shown · " + markedIds.length + " marked</p>" +
+        (markedIds.length ? '<button class="btn-ghost sm" data-act="clnone">Clear marks</button>' : "") +
+      "</div>" +
+
+      '<div class="loglist">' + (shown.length ? shown.map(function (c) {
+        var on = !!cleanup.marked[c.id];
+        var d = daysSince(c.lastContact);
+        var meta = [c.tier];
+        if (c.school) meta.push(c.school);
+        if (c.company) meta.push(c.company);
+        meta.push(c.lastContact ? "talked " + d + "d ago" : "never talked");
+        return '<div class="logrow clean' + (on ? " marked" : "") + '" data-act="clmark" data-id="' + c.id + '">' +
+          '<span class="clbox">' + (on ? "✕" : "") + "</span>" +
+          '<span class="body"><span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+          '<span class="d">' + esc(meta.join(" · ")) + "</span></span>" +
+        "</div>";
+      }).join("") : '<div class="empty">Nobody matches.</div>') + "</div>" +
+
+      '<div class="cleanbar">' +
+        '<button class="btn-ghost" data-act="clexit">Done</button>' +
+        (markedIds.length
+          ? '<button class="btn-danger" data-act="cldelete">Delete ' + markedIds.length + "</button>"
+          : '<span class="hint" style="margin:0;text-align:center;flex:1">Tap names to mark them</span>') +
+      "</div>";
+  }
+
+  /* ---------- add / queue ---------- */
   /* Insights counts only what happened in-app: contacts you entered yourself
      and tier moves you made. Bulk imports are excluded so one CSV cannot make
      a month look like you met four hundred people. */
@@ -1022,7 +1212,7 @@
     var markedIds = Object.keys(cleanup.marked).filter(function (k) { return cleanup.marked[k]; });
     var shown = searchContacts(list, cleanup.q || "");
 
-    return '<div class="eyebrow">Prune the list</div><h2>Clean up</h2>' +
+    return pageHead("cleanup", "Prune the list", "Clean up") +
       subLine("Tap anyone you no longer want. Nothing is deleted until you confirm.") +
 
       '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
@@ -1069,7 +1259,7 @@
     if (queueIndex >= pending.length) queueIndex = Math.max(0, pending.length - 1);
     var cur = pending[queueIndex];
 
-    return '<div class="eyebrow">Tonight\'s log</div><h2>Add</h2>' +
+    return pageHead("add", "Tonight\'s log", "Add") +
       subLine("Who did you meet? A name and a tier is enough. Potential and notes take five more seconds and are worth it while it is fresh.") +
       backupNagHTML() +
       '<div class="card"><h3>Just met someone</h3>' +
@@ -1193,8 +1383,11 @@
     if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
 
     document.getElementById("view").innerHTML =
-      tab === "tiering" ? viewTiering() :
+      /* cleanup and the import preview are modes, not tabs: they take over
+         whatever screen you launched them from, including Settings. */
       cleanup ? viewCleanup() :
+      importPreview ? viewImportPreview() :
+      tab === "tiering" ? viewTiering() :
       tab === "settings" ? viewSettings() :
       tab === "insights" ? viewInsights() :
       tab === "log" ? viewLog() :
@@ -1668,6 +1861,11 @@
         notes: [row.notes || row.position || "", row.role || ""].filter(Boolean).join(" "),
         phone: row.phone || row["phone number"] || "",
         email: row["email address"] || row.email || "",
+        interactions: dedupeDates((row.interactions || "").split(";").filter(Boolean)),
+        tierLog: (row.tierchanges || "").split(";").filter(Boolean).map(function (x) {
+          var q = x.split(">");
+          return { date: q[0], from: q[1] || "", to: q[2] || "" };
+        }),
         pending: !hasTier,
         added: ""
       });
@@ -1754,12 +1952,27 @@
     toast("Imported " + added + (updated ? ", updated " + updated : "") + (skipped ? ", skipped " + skipped : ""));
   }
 
+  function csvCell(v) {
+    v = String(v == null ? "" : v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  }
+
   function exportCSV() {
+    /* interactions and tierLog are packed into single cells so a plain CSV
+       round-trips the full history. Without these a backup silently loses
+       every date you ever logged. */
     var cols = ["name", "tier", "potential", "company", "school",
-                "location", "locationConfirmed", "lastContact", "notes", "phone", "email"];
+                "location", "locationConfirmed", "lastContact", "notes", "phone", "email",
+                "interactions", "tierchanges"];
     var lines = [cols.join(",")];
     state.contacts.forEach(function (c) {
       lines.push(cols.map(function (k) {
+        if (k === "interactions") return csvCell((c.interactions || []).join(";"));
+        if (k === "tierchanges") {
+          return csvCell((c.tierLog || []).map(function (m) {
+            return m.date + ">" + m.from + ">" + m.to;
+          }).join(";"));
+        }
         var v = c[k] == null ? "" : c[k];
         v = String(v);
         return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;

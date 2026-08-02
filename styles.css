@@ -505,3 +505,6 @@ label.f .n {
 .trendrow .t1 { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; margin-left: auto; }
 .trendrow .t1.up { color: #7dd3fc; }
 .trendrow .t1.down { color: #a8a29e; }
+
+/* symbol-mode page heading: the mark alone, no eyebrow, no word */
+.symhead { font-size: 30px; line-height: 1; margin: 2px 0 14px; font-weight: 600; }
