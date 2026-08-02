@@ -45,7 +45,9 @@ Launches full screen, works offline.
 index.html      app shell
 styles.css      all styling
 app.js          application logic
-data.js         seeded contacts (window.SEED_CONTACTS)
+sync.js         end-to-end encryption + merge for device sync
+api/sync.js     serverless endpoint that stores the encrypted blob
+data.js         empty by design — contacts are imported on-device
 manifest.json   PWA manifest
 sw.js           service worker, offline-first
 vercel.json     cache headers
@@ -54,9 +56,42 @@ icons/          192, 512, maskable, apple-touch, favicon
 
 All paths are relative, so the app also runs from a subfolder or straight off your desktop by opening `index.html`.
 
+## Sync across devices (optional)
+
+Sync is **off** until you turn it on, and the app works fully without it.
+
+Contacts are encrypted in the browser with a key derived from your passphrase
+(PBKDF2-SHA256, 250k iterations) before anything is uploaded. The server stores
+an opaque AES-GCM blob and a revision number, so Vercel, the database provider,
+and the author of this code cannot read it. **There is no password reset** —
+lose the passphrase and the synced copy is unrecoverable.
+
+### Turning it on
+
+1. In this project's Vercel dashboard open **Storage** and create an **Upstash
+   Redis** store. Vercel then sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`
+   automatically. (`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work.)
+2. Redeploy so the function sees the variables.
+3. In the app: **Add → Sync across devices**, choose a passphrase, **Turn on sync**.
+4. On the second device: same site, **same passphrase**, paste the **sync code**
+   shown on the first device, then **Join that sync**.
+
+Without those variables `/api/sync` returns 501 and the app says sync is not
+configured. Nothing else breaks.
+
+### How conflicts resolve
+
+Edits merge per contact by timestamp rather than overwriting the whole file, so
+changes made on your phone and laptop between syncs both survive. Deletions use
+tombstones, so deleting on one device is not undone by the other still holding a
+copy. Simultaneous writes are caught by a revision check and retried.
+
+Sync is not a backup — export a CSV regularly regardless.
+
 ## Data
 
-`localStorage`, per browser and per device. Phone and laptop keep separate copies.
+`localStorage`, per browser and per device. Without sync, phone and laptop keep
+separate copies.
 
 Export CSV from the Add tab to back up or move data between devices. LinkedIn's `Connections.csv` imports directly.
 

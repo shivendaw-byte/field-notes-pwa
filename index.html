@@ -33,6 +33,9 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab on" data-tab="tiering" role="tab" aria-selected="true">Tiering</button>
+    <button class="tab" data-tab="reconnect" role="tab" aria-selected="false">
+      Reconnect <span class="pill warnpill" id="coldPill" hidden></span>
+    </button>
     <button class="tab" data-tab="travel" role="tab" aria-selected="false">Travel</button>
     <button class="tab" data-tab="add" role="tab" aria-selected="false">
       Add <span class="pill" id="pendingPill" hidden></span>
@@ -49,6 +52,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="data.js"></script>
+<script src="sync.js"></script>
 <script src="app.js"></script>
 <script>
   if ('serviceWorker' in navigator) {

@@ -1,8 +1,8 @@
 /* Field Notes service worker — offline-first app shell */
-var CACHE = 'field-notes-v5';
+var CACHE = 'field-notes-v6';
 var ASSETS = [
   './', './index.html', './styles.css', './app.js', './data.js',
-  './manifest.json', './icons/icon-192.png', './icons/icon-512.png',
+  './sync.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png',
   './icons/apple-touch-icon.png', './icons/favicon.svg'
 ];
 
@@ -28,6 +28,10 @@ self.addEventListener('fetch', function (e) {
   if (e.request.method !== 'GET') return;
   var url = new URL(e.request.url);
   if (url.origin !== self.location.origin) return;
+
+  // Sync is live data — never cache it, or the app would keep replaying a
+  // stale snapshot and silently lose edits made on the other device.
+  if (url.pathname.indexOf('/api/') === 0) return;
 
   // Navigations: network first, fall back to cached shell so the app opens offline.
   if (e.request.mode === 'navigate') {
