@@ -43,7 +43,10 @@ async function redis(cmd) {
 // Sync IDs are generated client-side by crypto.randomUUID(); accept only that shape.
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export default async function handler(req, res) {
+/* CommonJS on purpose: there is no package.json in this project, and Vercel
+   treats an /api/*.js file as CommonJS unless one declares "type": "module".
+   Using `export default` here would crash the function on deploy. */
+module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
   if (!creds()) {
