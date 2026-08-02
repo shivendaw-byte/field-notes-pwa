@@ -1,5 +1,5 @@
 /* Field Notes service worker — offline-first app shell */
-var CACHE = 'field-notes-v6';
+var CACHE = 'field-notes-v7';
 var ASSETS = [
   './', './index.html', './styles.css', './app.js', './data.js',
   './sync.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png',
@@ -51,16 +51,23 @@ self.addEventListener('fetch', function (e) {
     return;
   }
 
-  // Static assets: cache first.
+  // Static assets: stale-while-revalidate.
+  // Pure cache-first would pin the app to whatever shipped with this cache
+  // name, so an app.js change with no sw.js change would never reach anyone.
+  // Serving the cached copy immediately keeps it instant and offline-capable,
+  // while the background refetch means the next load has the new version.
   e.respondWith(
-    caches.match(e.request).then(function (cached) {
-      if (cached) return cached;
-      return fetch(e.request).then(function (res) {
-        if (res && res.status === 200 && res.type === 'basic') {
-          var copy = res.clone();
-          caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
-        }
-        return res;
+    caches.open(CACHE).then(function (cache) {
+      return cache.match(e.request).then(function (cached) {
+        var net = fetch(e.request).then(function (res) {
+          if (res && res.status === 200 && res.type === 'basic') cache.put(e.request, res.clone());
+          return res;
+        }).catch(function () { return null; });
+
+        if (cached) { e.waitUntil(net); return cached; }
+        return net.then(function (r) {
+          return r || new Response('', { status: 504, statusText: 'Offline and not cached' });
+        });
       });
     })
   );

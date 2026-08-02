@@ -770,9 +770,14 @@
       if (!quiet) toast("Synced");
     }).catch(function (err) {
       syncBusy = false;
-      syncMsg = err && err.message === "WRONG_PASSPHRASE"
+      var m = err && err.message ? err.message : "unknown";
+      syncMsg = m === "WRONG_PASSPHRASE"
         ? "Wrong passphrase for this sync code."
-        : "Sync failed: " + (err && err.message ? err.message : "unknown");
+        : /failed to fetch|networkerror|load failed/i.test(m)
+          // Offline is the common case, and it is harmless: every edit is
+          // already written to this device before sync is ever attempted.
+          ? "No connection — your changes are saved on this device and will sync next time."
+          : "Sync failed: " + m;
       render();
       if (!quiet) toast(syncMsg);
     });
