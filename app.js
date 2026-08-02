@@ -45,7 +45,7 @@
   var SNOOZE_DAYS = 10;
   var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "7.0";
+  var APP_VERSION = "7.1";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -232,23 +232,6 @@
   function tierBadge(t) { return '<span class="badge t-' + t.toLowerCase() + '">' + t + "</span>"; }
   function digits(s) { return String(s || "").replace(/[^\d+]/g, ""); }
 
-  /* Every chip label, longest first, so "Growth-oriented" is stripped before
-     shorter fragments can partially match it. */
-  var ALL_CHIPS = (function () {
-    var out = [];
-    NOTE_TRIGGERS.forEach(function (k) { out = out.concat(NOTE_CHIPS[k]); });
-    return out.sort(function (a, b) { return b.length - a.length; });
-  })();
-
-  /* The row subtitle shows notes, but never the chip vocabulary: those live at
-     the bottom of the profile only, so no emoji ever reaches the headline. */
-  function notesPreview(c) {
-    var t = c.notes || "";
-    ALL_CHIPS.forEach(function (label) { t = t.split(label).join(" "); });
-    t = t.replace(/[\s,;\u00b7|]+/g, " ").trim();
-    return t;
-  }
-
   function activeTriggers(text) {
     var low = (text || "").toLowerCase();
     return NOTE_TRIGGERS.filter(function (w) {
@@ -308,9 +291,9 @@
        about when you last spoke — recency lives in Reconnect, not on every row,
        because seeing it everywhere is what turns this into a guilt tracker. */
     var sub = [];
+    // Notes never appear in the subtitle \u2014 imported, chip-tagged, or freeform.
+    // They stay searchable (see haystack()) but only readable inside the profile.
     if (c.location) sub.push("<span>" + esc(c.location) + "</span>");
-    var np = notesPreview(c);
-    if (np) sub.push('<span style="opacity:.8">' + esc(np.slice(0, 64)) + (np.length > 64 ? "\u2026" : "") + "</span>");
 
     return '<div class="row' + (openId === c.id ? " open" : "") + '" data-id="' + c.id + '">' +
       '<button class="row-head" data-act="toggle" data-id="' + c.id + '" aria-expanded="' + (openId === c.id) + '">' +
