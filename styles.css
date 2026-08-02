@@ -315,3 +315,38 @@ input[readonly] { opacity: .85; font-family: ui-monospace, SFMono-Regular, Menlo
 .nudge-acts .tbtn.primary { flex: 1.4; }
 
 .logrow .body { cursor: pointer; }
+
+/* ---- quick "Talked today" straight from the list ---- */
+.row-top { display: flex; align-items: stretch; gap: 0; }
+.row-top .row-head { flex: 1; min-width: 0; }
+.quicktalk {
+  flex: 0 0 auto; align-self: center; margin-right: 10px;
+  min-height: 44px; min-width: 64px; padding: 10px 12px;
+  border-radius: 9px; cursor: pointer; font: inherit; font-weight: 700; font-size: 12.5px;
+  background: rgba(56,189,248,.14); color: #7dd3fc; border: 1px solid rgba(56,189,248,.34);
+}
+.quicktalk:active { transform: scale(.95); }
+.quicktalk.on {
+  background: rgba(74,222,128,.18); color: #86efac; border-color: rgba(74,222,128,.45);
+  min-width: 48px;
+}
+
+/* ---- cleanup ---- */
+.logrow.clean { cursor: pointer; padding-left: 12px; }
+.logrow.clean.marked {
+  border-color: rgba(190,60,70,.5); background: rgba(190,60,70,.12);
+}
+.logrow.clean.marked .t { text-decoration: line-through; opacity: .65; }
+.clbox {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px;
+  border: 2px solid rgba(255,255,255,.18); display: grid; place-items: center;
+  font-size: 14px; font-weight: 800; color: #fca5a5;
+}
+.logrow.clean.marked .clbox { border-color: rgba(190,60,70,.6); background: rgba(190,60,70,.25); }
+.cleanbar {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; gap: 10px; align-items: center;
+  margin: 16px -4px 0; padding: 12px 4px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(180deg, rgba(12,10,9,0), rgba(12,10,9,.95) 30%);
+}
+.cleanbar .btn-ghost, .cleanbar .btn-danger { margin: 0; flex: 1; }

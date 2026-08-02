@@ -28,7 +28,7 @@
   var COLD_DAYS = { Close: 21, Middle: 60 };
   var SNOOZE_DAYS = 10;
 
-  var APP_VERSION = "5.2";
+  var APP_VERSION = "5.3";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -40,6 +40,7 @@
   var browseBy = "tier", tierFilter = "Close", groupFilter = "";
   var tierQuery = "", travelQuery = "", searchAll = false;
   var nudgeFor = null;   // contact id currently shown in the reminder card
+  var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
   var qDraft = { tier: "Middle", purpose: "", potential: "" };
   var deferredPrompt = null;
@@ -186,6 +187,10 @@
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m];
     });
   }
+  function potLevel(p) {
+    for (var i = 0; i < POTENTIAL.length; i++) if (POTENTIAL[i].key === p) return POTENTIAL[i].lvl;
+    return 0;
+  }
   function potMeter(p) {
     var found = null;
     POTENTIAL.forEach(function (x) { if (x.key === p) found = x; });
@@ -248,7 +253,9 @@
     }
     if (c.notes) sub.push('<span style="opacity:.8">' + esc(c.notes.slice(0, 64)) + (c.notes.length > 64 ? "…" : "") + "</span>");
 
+    var markedToday = c.lastContact === today();
     return '<div class="row' + (openId === c.id ? " open" : "") + '" data-id="' + c.id + '">' +
+      '<div class="row-top">' +
       '<button class="row-head" data-act="toggle" data-id="' + c.id + '" aria-expanded="' + (openId === c.id) + '">' +
         '<span style="flex:1;min-width:0">' +
           '<span class="row-meta">' +
@@ -263,10 +270,14 @@
         "</span>" +
         '<span class="caret" aria-hidden="true">▾</span>' +
       "</button>" +
+      '<button class="quicktalk' + (markedToday ? " on" : "") + '" data-act="marktouch" data-id="' + c.id +
+        '" aria-label="Mark that you talked to ' + esc(c.name) + ' today" title="Talked today">' +
+        (markedToday ? "✓" : "Talked") + "</button>" +
+      "</div>" +
       '<div class="row-body">' +
         '<div class="field rowsplit" style="gap:8px">' +
           '<button class="btn-ghost talk" data-act="marktouch" data-id="' + c.id + '">' +
-            (c.lastContact === today() ? "✓ Marked today" : "Mark as in touch") + "</button>" +
+            (c.lastContact === today() ? "✓ Talked today" : "Talked today") + "</button>" +
           (c.lastContact && c.lastContact !== today()
             ? '<span class="hint" style="margin:0">last ' + daysSince(c.lastContact) + "d ago</span>" : "") +
         "</div>" +
@@ -468,16 +479,23 @@
         '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
         '<span class="d">' + tierBadge(c.tier) +
           '<span class="' + (i && i.cold ? "stale" : "") + '">' + since + "</span>" +
+          potMeter(c.potential) +
         "</span>" +
       "</span>" +
-      '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">In touch</button>' +
+      '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">Talked</button>' +
     "</div>";
   }
 
   function viewReconnect() {
     var tracked = state.contacts.filter(function (c) { return !!coldInfo(c); });
     var cold = tracked.filter(function (c) { return coldInfo(c).cold; });
-    cold.sort(function (a, b) { return coldInfo(b).over - coldInfo(a).over; });
+    // Sort by potential first, lateness second: the question this app answers is
+    // "who is worth reaching out to", not "who is most overdue".
+    cold.sort(function (a, b) {
+      var pa = potLevel(a.potential), pb = potLevel(b.potential);
+      if (pa !== pb) return pb - pa;
+      return coldInfo(b).over - coldInfo(a).over;
+    });
     var fine = tracked.length - cold.length;
 
     return '<div class="eyebrow">Quietly keeping score</div><h2>Reconnect</h2>' +
@@ -646,8 +664,71 @@
       "</div>";
   }
 
+  /* ---------- cleanup: bulk triage of contacts that no longer matter ---------- */
+  var CLEAN_FILTERS = [
+    { key: "untagged", label: "No school or company",
+      test: function (c) { return !(c.school || "").trim() && !(c.company || "").trim(); } },
+    { key: "acq", label: "Acquaintance only",
+      test: function (c) { return c.tier === "Acquaintance"; } },
+    { key: "nevermarked", label: "Never talked to",
+      test: function (c) { return !c.lastContact; } },
+    { key: "all", label: "Everyone", test: function () { return true; } }
+  ];
+
+  function cleanupCandidates() {
+    var f = CLEAN_FILTERS.filter(function (x) { return x.key === cleanup.filter; })[0] || CLEAN_FILTERS[0];
+    return state.contacts.filter(function (c) { return !c.pending && f.test(c); })
+      .sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+  }
+
+  function viewCleanup() {
+    var list = cleanupCandidates();
+    var markedIds = Object.keys(cleanup.marked).filter(function (k) { return cleanup.marked[k]; });
+    var shown = searchContacts(list, cleanup.q || "");
+
+    return '<div class="eyebrow">Prune the list</div><h2>Clean up</h2>' +
+      '<p class="sub">Tap anyone you no longer want. Nothing is deleted until you press the button at the bottom, ' +
+      'and you get one undo after that. People with a school or company tag are hidden by default — those are your recent ones.</p>' +
+
+      '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
+        var n = state.contacts.filter(function (c) { return !c.pending && f.test(c); }).length;
+        return '<button class="filter' + (cleanup.filter === f.key ? " on" : "") + '" data-act="clfilter" data-val="' + f.key + '">' +
+          f.label + '<span class="n">' + n + "</span></button>";
+      }).join("") + "</div>" +
+
+      '<div class="searchwrap"><input type="search" id="clSearch" value="' + esc(cleanup.q || "") +
+        '" placeholder="Filter these by name…" autocomplete="off"></div>' +
+
+      '<div class="rowsplit" style="margin-bottom:10px">' +
+        '<p class="hint" style="margin:0">' + shown.length + " shown · " + markedIds.length + " marked</p>" +
+        (markedIds.length ? '<button class="btn-ghost sm" data-act="clnone">Clear marks</button>' : "") +
+      "</div>" +
+
+      '<div class="loglist">' + (shown.length ? shown.map(function (c) {
+        var on = !!cleanup.marked[c.id];
+        var d = daysSince(c.lastContact);
+        var meta = [c.tier];
+        if (c.school) meta.push(c.school);
+        if (c.company) meta.push(c.company);
+        meta.push(c.lastContact ? "talked " + d + "d ago" : "never talked");
+        return '<div class="logrow clean' + (on ? " marked" : "") + '" data-act="clmark" data-id="' + c.id + '">' +
+          '<span class="clbox">' + (on ? "✕" : "") + "</span>" +
+          '<span class="body"><span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+          '<span class="d">' + esc(meta.join(" · ")) + "</span></span>" +
+        "</div>";
+      }).join("") : '<div class="empty">Nobody matches.</div>') + "</div>" +
+
+      '<div class="cleanbar">' +
+        '<button class="btn-ghost" data-act="clexit">Done</button>' +
+        (markedIds.length
+          ? '<button class="btn-danger" data-act="cldelete">Delete ' + markedIds.length + "</button>"
+          : '<span class="hint" style="margin:0;text-align:center;flex:1">Tap names to mark them</span>') +
+      "</div>";
+  }
+
   /* ---------- add / queue ---------- */
   function viewAdd() {
+    if (cleanup) return viewCleanup();
     if (importPreview) return viewImportPreview();
 
     var pending = state.contacts.filter(function (c) { return c.pending; });
@@ -709,6 +790,12 @@
       "</div>" +
 
       syncCardHTML() +
+
+      '<div class="card"><h3>Clean up contacts</h3>' +
+        '<p class="note">Bulk-remove people who are no longer part of your life. Defaults to contacts with ' +
+        'no school or company tag — usually the oldest ones.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="clopen">Start cleaning up →</button></div>' +
+      "</div>" +
 
       '<div class="card"><h3>Import and export</h3>' +
         '<p class="note">CSV columns read: name, tier, purpose, company, school, location, notes, phone, email. You get a review screen before anything is saved. LinkedIn’s Connections.csv works directly.</p>' +
@@ -781,6 +868,10 @@
     if (ts && tab === "tiering") {
       ts.addEventListener("input", function () { tierQuery = ts.value; renderListOnly(); });
     }
+    var cl = document.getElementById("clSearch");
+    if (cl && cleanup) {
+      cl.addEventListener("input", function () { cleanup.q = cl.value; renderListOnly(); });
+    }
     var tv = document.getElementById("travelSearch");
     if (tv && tab === "travel") {
       tv.addEventListener("input", function () { travelQuery = tv.value; renderListOnly(); });
@@ -815,7 +906,7 @@
     host.hidden = false;
     host.innerHTML =
       '<div class="nudge-body">' +
-        '<span class="nudge-lbl">Still in touch?</span>' +
+        '<span class="nudge-lbl">Talked to them lately?</span>' +
         '<strong>' + esc(c.name) + "</strong>" +
         '<span class="nudge-sub">' + c.tier + " · " +
           (i.everMarked ? i.days + " days since you marked contact"
@@ -876,7 +967,7 @@
      ============================================================ */
   document.addEventListener("click", function (e) {
     var tabBtn = e.target.closest(".tab");
-    if (tabBtn) { tab = tabBtn.dataset.tab; openId = null; importPreview = null; render(); return; }
+    if (tabBtn) { tab = tabBtn.dataset.tab; openId = null; importPreview = null; cleanup = null; render(); return; }
 
     var el = e.target.closest("[data-act]");
     if (!el) return;
@@ -923,7 +1014,7 @@
         touch(c);
         if (nudgeFor === c.id) nudgeFor = null;
         commit();
-        toast("Clock reset for " + (c.name || "").split(" ")[0]);
+        toast("Marked — talked to " + (c.name || "").split(" ")[0] + " today");
         break;
       }
       case "nudgesnooze": {
@@ -1040,6 +1131,30 @@
         }
         break;
 
+      case "clopen": cleanup = { filter: "untagged", marked: {}, q: "" }; tab = "add"; render(); break;
+      case "clexit": cleanup = null; render(); break;
+      case "clfilter": cleanup.filter = val; render(); break;
+      case "clnone": cleanup.marked = {}; render(); break;
+      case "clmark":
+        cleanup.marked[id] = !cleanup.marked[id];
+        if (!cleanup.marked[id]) delete cleanup.marked[id];
+        render();
+        break;
+      case "cldelete": {
+        var ids = Object.keys(cleanup.marked).filter(function (k) { return cleanup.marked[k]; });
+        if (!ids.length) break;
+        if (!confirm("Delete " + ids.length + " contact" + (ids.length === 1 ? "" : "s") + "? You get one undo.")) break;
+        var removed = state.contacts.filter(function (c) { return ids.indexOf(c.id) !== -1; });
+        state.contacts = state.contacts.filter(function (c) { return ids.indexOf(c.id) === -1; });
+        removed.forEach(function (c) { state.deleted.push({ id: c.id, at: nowISO() }); });
+        lastDeleted = { bulk: removed };
+        cleanup.marked = {};
+        commit();
+        clearTimeout(undoTimer);
+        undoTimer = setTimeout(function () { lastDeleted = null; }, 10000);
+        toast("Deleted " + removed.length, "Undo", "undodelete");
+        break;
+      }
       case "export": exportCSV(); break;
     }
   });
@@ -1087,6 +1202,16 @@
   }
   function undoDelete() {
     if (!lastDeleted) { toast("Nothing to undo"); return; }
+    if (lastDeleted.bulk) {
+      var back = lastDeleted.bulk;
+      back.forEach(function (c) { touch(c); state.contacts.push(c); });
+      var ids = back.map(function (c) { return c.id; });
+      state.deleted = state.deleted.filter(function (x) { return ids.indexOf(x.id) === -1; });
+      lastDeleted = null;
+      commit();
+      toast("Restored " + back.length + " contacts");
+      return;
+    }
     var d = lastDeleted;
     state.contacts.splice(Math.min(d.index, state.contacts.length), 0, d.contact);
     state.deleted = state.deleted.filter(function (x) { return x.id !== d.contact.id; });
