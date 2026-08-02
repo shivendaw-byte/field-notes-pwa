@@ -50,7 +50,7 @@
   var SNOOZE_DAYS = 10;
   var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "8.1";
+  var APP_VERSION = "8.2";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -61,6 +61,7 @@
   var state, tab = "tiering", openId = null;
   var browseBy = "tier", tierFilter = "Close", groupFilter = "";
   var tierQuery = "", travelQuery = "", logQuery = "", searchAll = false;
+  var orderSnapshot = null;   // frozen contact order for the current tier/grouping
   var nudgeFor = null;   // contact id currently shown in the reminder card
   var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
@@ -422,6 +423,46 @@
       '</p><button class="btn-ghost" data-act="export">Export</button></div>';
   }
 
+  /* Highest potential first, unrated last, alphabetical within a level. */
+  function byPotential(a, b) {
+    var pa = potLevel(a.potential), pb = potLevel(b.potential);
+    if (pa !== pb) return pb - pa;
+    return (a.name || "").localeCompare(b.name || "");
+  }
+
+  /* Rating someone mid-pass used to yank them up the list under your finger and
+     lose your place. So the order is captured once per context and held until
+     you leave it — switch tab, tier, or grouping and it recomputes. Contacts
+     added since the snapshot sort to the end rather than jumping the queue. */
+  function rankList(base) {
+    if (!orderSnapshot) {
+      var sorted = base.slice().sort(byPotential);
+      orderSnapshot = sorted.map(function (c) { return c.id; });
+      return sorted;
+    }
+    var pos = {};
+    orderSnapshot.forEach(function (id, i) { pos[id] = i; });
+    return base.slice().sort(function (a, b) {
+      var ia = pos[a.id], ib = pos[b.id];
+      if (ia === undefined && ib === undefined) return byPotential(a, b);
+      if (ia === undefined) return 1;
+      if (ib === undefined) return -1;
+      return ia - ib;
+    });
+  }
+
+  /* True when a rating changed since the snapshot, so the list is now out of
+     order — used to offer a re-sort instead of silently doing nothing. */
+  function orderIsStale(base) {
+    if (!orderSnapshot) return false;
+    var current = rankList(base);
+    var fresh = base.slice().sort(byPotential);
+    for (var i = 0; i < fresh.length; i++) {
+      if (!current[i] || current[i].id !== fresh[i].id) return true;
+    }
+    return false;
+  }
+
   function viewTiering() {
     var pending = state.contacts.filter(function (c) { return c.pending; });
     var base, heading;
@@ -441,20 +482,17 @@
       heading = groupFilter || "";
     }
 
-    /* Potential is the reason this app exists, so it decides the order: highest
-       first, unrated last, alphabetical within a level so the list is stable.
-       Applies to browsing and to search results alike. */
-    var list = searchContacts(base, tierQuery).slice().sort(function (a, b) {
-      var pa = potLevel(a.potential), pb = potLevel(b.potential);
-      if (pa !== pb) return pb - pa;
-      return (a.name || "").localeCompare(b.name || "");
-    });
+    /* Rank the whole tier first, then filter by search, so searching never
+       reshuffles anyone. The ranking is frozen while you work (see rankList). */
+    var list = searchContacts(rankList(base), tierQuery);
 
     // Never hide matches silently: if this tier has none but others do, say so.
     var elsewhere = 0;
     if (tierQuery && !list.length && !searchAll) {
       elsewhere = searchContacts(state.contacts, tierQuery).length;
     }
+
+    var stale = orderIsStale(base);
 
     var filtersHTML;
     if (browseBy === "tier") {
@@ -486,6 +524,10 @@
       '<div class="searchwrap"><input type="search" id="tierSearch" value="' + esc(tierQuery) + '" placeholder="Search name, company, school, notes…" autocomplete="off" enterkeyhint="search">' +
         (tierQuery ? '<button class="clearx" data-act="clearsearch" aria-label="Clear search">×</button>' : "") +
       "</div>" +
+      (stale
+        ? '<div class="rowsplit resortbar"><p class="hint" style="margin:0">Ratings changed — order updates when you leave this list.</p>' +
+          '<button class="btn-ghost sm" data-act="resort">Re-sort now</button></div>'
+        : "") +
       (tierQuery
         ? '<div class="rowsplit" style="margin:-4px 0 12px"><p class="hint" style="margin:0">' + list.length + " match" + (list.length === 1 ? "" : "es") +
             (searchAll ? " across everyone" : heading ? " in " + esc(heading) : "") + "</p>" +
@@ -1145,7 +1187,7 @@
      ============================================================ */
   document.addEventListener("click", function (e) {
     var tabBtn = e.target.closest(".tab");
-    if (tabBtn) { tab = tabBtn.dataset.tab; openId = null; importPreview = null; cleanup = null; render(); return; }
+    if (tabBtn) { tab = tabBtn.dataset.tab; openId = null; importPreview = null; cleanup = null; orderSnapshot = null; render(); return; }
 
     var el = e.target.closest("[data-act]");
     if (!el) return;
@@ -1160,12 +1202,13 @@
         render();
         break;
       }
-      case "browseby": browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; render(); break;
-      case "filter": tierFilter = val; tierQuery = ""; searchAll = false; openId = null; render(); break;
+      case "browseby": browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
+      case "filter": tierFilter = val; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
       case "filterclose": tab = "tiering"; browseBy = "tier"; tierFilter = "Close"; render(); break;
-      case "group": groupFilter = groupFilter === val ? "" : val; tierQuery = ""; openId = null; render(); break;
+      case "group": groupFilter = groupFilter === val ? "" : val; tierQuery = ""; openId = null; orderSnapshot = null; render(); break;
       case "clearsearch": tierQuery = ""; searchAll = false; render(); break;
-      case "toggleall": searchAll = !searchAll; render(); break;
+      case "resort": orderSnapshot = null; render(); toast("Re-sorted by potential"); break;
+      case "toggleall": searchAll = !searchAll; orderSnapshot = null; render(); break;
       case "gotoadd": tab = "add"; render(); break;
       case "dismissonboard": state.settings.onboarded = true; commit(); break;
       case "setcity": travelQuery = val; render(); break;

@@ -435,3 +435,11 @@ input[readonly] { opacity: .85; font-family: ui-monospace, SFMono-Regular, Menlo
 .pot.lv1 i.on { background: #78716c; }
 
 .hint.stale { color: #e8b57c; }
+
+/* Frozen-order notice: quiet, so it reads as information not an error */
+.resortbar {
+  margin: -2px 0 12px; padding: 9px 12px;
+  background: rgba(56,189,248,.07); border: 1px solid rgba(56,189,248,.2);
+  border-radius: 10px; gap: 10px;
+}
+.resortbar .btn-ghost { margin: 0; flex: 0 0 auto; }
