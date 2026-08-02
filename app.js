@@ -9,7 +9,7 @@
      Constants
      ============================================================ */
   var TIERS = ["Close", "Middle", "Acquaintance", "Networking"];
-  var PURPOSES = ["Chill hang", "Spontaneous hang", "Deep conversation", "Networking", "Unsure"];
+  var PURPOSES = ["Chill hang", "Spontaneous hang", "Deep conversation", "Unsure"];
   var POTENTIAL = [
     { key: "Rare",   lvl: 4, blurb: "the standout — rare" },
     { key: "Strong", lvl: 3, blurb: "clear pull toward more" },
@@ -18,11 +18,17 @@
   ];
   var ROLES = ["Family", "Professor", "Mentor", "Coworker", "Classmate", "Teammate"];
 
-  /* How long before someone in each tier counts as going cold. Only applies
-     to people you have actually logged a conversation with — logging is
-     opt-in, so nobody nags you about the 900 people you never log. */
-  var COLD_DAYS = { Close: 14, Middle: 60, Networking: 90, Acquaintance: 180 };
+  /* How long before someone counts as going cold. Close and Middle only —
+     Networking and Acquaintance are deliberately absent, so the 800-odd people
+     in those tiers can never generate a reminder.
 
+     The clock does NOT require logging. It starts when someone enters a tracked
+     tier and resets whenever you confirm you are in touch, so this works fine
+     for someone who never logs a single conversation. */
+  var COLD_DAYS = { Close: 21, Middle: 60 };
+  var SNOOZE_DAYS = 10;
+
+  var APP_VERSION = "5.2";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -33,6 +39,7 @@
   var state, tab = "tiering", openId = null;
   var browseBy = "tier", tierFilter = "Close", groupFilter = "";
   var tierQuery = "", travelQuery = "", searchAll = false;
+  var nudgeFor = null;   // contact id currently shown in the reminder card
   var queueIndex = 0, queueHistory = [];
   var qDraft = { tier: "Middle", purpose: "", potential: "" };
   var deferredPrompt = null;
@@ -47,6 +54,11 @@
   function nowISO() { return new Date().toISOString(); }
   function monthsSince(d) { return d ? Math.round((Date.now() - new Date(d)) / 2592000000) : null; }
   function daysSince(d) { return d ? Math.floor((Date.now() - new Date(d)) / 86400000) : null; }
+  function addDays(iso, n) {
+    var d = new Date(iso);
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  }
 
   /* ============================================================
      Storage + migration
@@ -56,7 +68,8 @@
       id: uid(), name: "", tier: "Acquaintance", purpose: "", potential: "",
       company: "", school: "", location: "", locationConfirmed: "",
       notes: "", phone: "", email: "", pending: false, added: "",
-      roles: [], roleOther: "", lastContact: "", touches: 0, updatedAt: nowISO()
+      roles: [], roleOther: "", lastContact: "", touches: 0,
+      tierSince: "", snoozedUntil: "", updatedAt: nowISO()
     };
     if (over) for (var k in over) if (over.hasOwnProperty(k)) c[k] = over[k];
     return c;
@@ -75,6 +88,12 @@
       if (c.roleOther === undefined) c.roleOther = "";
       if (c.lastContact === undefined) c.lastContact = "";
       if (typeof c.touches !== "number") c.touches = 0;
+      if (c.snoozedUntil === undefined) c.snoozedUntil = "";
+      // Baseline for the reconnect clock when nothing has ever been logged.
+      if (!c.tierSince) c.tierSince = c.lastContact || c.added || today();
+      delete c.interactions;
+      // "Networking" was dropped as a reach-out reason: the tier already says it.
+      if (c.purpose === "Networking") c.purpose = "";
       if (!c.updatedAt) c.updatedAt = nowISO();
       if (!c.id) c.id = uid();
     });
@@ -183,11 +202,34 @@
     return all.map(function (r) { return '<span class="tag role">' + esc(r) + "</span>"; }).join("");
   }
 
+  /* null means "not tracked at all" — any tier outside COLD_DAYS, or anyone
+     pending. Everyone tracked has a clock, whether or not they were ever
+     logged: it falls back to when they entered the tier. */
   function coldInfo(c) {
-    if (!c.lastContact) return null;
-    var d = daysSince(c.lastContact);
-    var limit = COLD_DAYS[c.tier] || 90;
-    return { days: d, limit: limit, over: d - limit, cold: d >= limit };
+    var limit = COLD_DAYS[c.tier];
+    if (!limit || c.pending) return null;
+    var from = c.lastContact || c.tierSince;
+    if (!from) return null;
+    var d = daysSince(from);
+    return {
+      days: d, limit: limit, over: d - limit,
+      cold: d >= limit,
+      everMarked: !!c.lastContact,
+      snoozed: c.snoozedUntil && daysSince(c.snoozedUntil) < 0
+    };
+  }
+
+  /* The one person worth nudging about right now, or null. Most overdue first;
+     snoozed people are skipped. Deliberately returns ONE — a queue would be
+     the pressure this is meant to avoid. */
+  function nudgeCandidate() {
+    var best = null, bestOver = -1;
+    state.contacts.forEach(function (c) {
+      var i = coldInfo(c);
+      if (!i || !i.cold || i.snoozed) return;
+      if (i.over > bestOver) { best = c; bestOver = i.over; }
+    });
+    return best;
   }
 
   function rowHTML(c) {
@@ -223,9 +265,10 @@
       "</button>" +
       '<div class="row-body">' +
         '<div class="field rowsplit" style="gap:8px">' +
-          '<button class="btn-ghost talk" data-act="logtalk" data-id="' + c.id + '">' +
-            (c.lastContact === today() ? "✓ Logged today" : "Talked today") + "</button>" +
-          (c.touches ? '<span class="hint" style="margin:0">' + c.touches + " logged</span>" : "") +
+          '<button class="btn-ghost talk" data-act="marktouch" data-id="' + c.id + '">' +
+            (c.lastContact === today() ? "✓ Marked today" : "Mark as in touch") + "</button>" +
+          (c.lastContact && c.lastContact !== today()
+            ? '<span class="hint" style="margin:0">last ' + daysSince(c.lastContact) + "d ago</span>" : "") +
         "</div>" +
         '<div class="field"><label class="f">Tier — tap to move</label><div class="chips">' +
           TIERS.map(function (t) {
@@ -413,25 +456,46 @@
       "</div>";
   }
 
-  function viewReconnect() {
-    var tracked = state.contacts.filter(function (c) { return c.lastContact && !c.pending; });
-    var cold = tracked.filter(function (c) { var i = coldInfo(c); return i && i.cold; });
-    cold.sort(function (a, b) { return coldInfo(b).over - coldInfo(a).over; });
-    var warm = tracked.length - cold.length;
+  /* Compact line: name, tier, how long since contact. The number is the point. */
+  function coldRowHTML(c) {
+    var i = coldInfo(c);
+    var since = !i ? ""
+      : i.everMarked
+        ? (i.days === 0 ? "in touch today" : i.days === 1 ? "yesterday" : i.days + " days")
+        : "added " + i.days + "d ago, never marked";
+    return '<div class="logrow' + (i && i.cold ? " cold" : "") + '">' +
+      '<span class="body" data-act="opencontact" data-id="' + c.id + '">' +
+        '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+        '<span class="d">' + tierBadge(c.tier) +
+          '<span class="' + (i && i.cold ? "stale" : "") + '">' + since + "</span>" +
+        "</span>" +
+      "</span>" +
+      '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">In touch</button>' +
+    "</div>";
+  }
 
-    return '<div class="eyebrow">Who is slipping</div><h2>Reconnect</h2>' +
-      '<p class="sub">People you have talked to before, but not lately. Close counts as cold after ' +
-        COLD_DAYS.Close + ' days, Middle after ' + COLD_DAYS.Middle + ', Networking after ' + COLD_DAYS.Networking + '.</p>' +
+  function viewReconnect() {
+    var tracked = state.contacts.filter(function (c) { return !!coldInfo(c); });
+    var cold = tracked.filter(function (c) { return coldInfo(c).cold; });
+    cold.sort(function (a, b) { return coldInfo(b).over - coldInfo(a).over; });
+    var fine = tracked.length - cold.length;
+
+    return '<div class="eyebrow">Quietly keeping score</div><h2>Reconnect</h2>' +
+      '<p class="sub">Close and Middle only. You never have to log anything — the clock starts when ' +
+      'someone joins one of those tiers and resets when you tap <strong>In touch</strong>. ' +
+      'Networking and Acquaintance are left alone on purpose.</p>' +
+
       (!tracked.length
-        ? '<div class="card"><h3>Nothing tracked yet</h3>' +
-          '<p class="note">This list fills itself in. Open anyone and tap <strong>Talked today</strong> after you actually speak — ' +
-          'only people you log ever show up here. There is no obligation to log everyone you pass on Locust Walk.</p></div>'
-        : (cold.length
-            ? '<p class="hint" style="margin-bottom:10px">' + cold.length + " going cold · " + warm + " still warm</p>" +
-              '<div class="rowlist">' + cold.map(rowHTML).join("") + "</div>"
-            : '<div class="card ok-card"><h3>All caught up</h3><p class="note">All ' + tracked.length +
-              " tracked people are within their window. Nothing to chase.</p></div>") +
-          (warm && cold.length ? '<p class="hint" style="margin-top:14px">' + warm + (warm === 1 ? " more is" : " more are") + " still within their window.</p>" : ""));
+        ? '<div class="card"><h3>Nobody tracked yet</h3><p class="note">Move someone into Close or Middle ' +
+          'and they show up here after ' + COLD_DAYS.Close + ' and ' + COLD_DAYS.Middle + ' days respectively.</p></div>'
+        : cold.length
+          ? '<h3 class="logsec">Been a while <span class="n">' + cold.length + "</span></h3>" +
+            '<div class="loglist">' + cold.map(coldRowHTML).join("") + "</div>" +
+            (fine ? '<p class="hint" style="margin-top:14px">' + fine + " other" + (fine === 1 ? " is" : "s are") +
+                    " still inside their window.</p>" : "")
+          : '<div class="card ok-card"><h3>Nothing slipping</h3><p class="note">All ' + tracked.length +
+            " tracked " + (tracked.length === 1 ? "person is" : "people are") + " inside their window. " +
+            "Close resets after " + COLD_DAYS.Close + " days, Middle after " + COLD_DAYS.Middle + ".</p></div>");
   }
 
   function viewTravel() {
@@ -652,6 +716,7 @@
         '<p class="note" id="importStatus"></p>' +
         '<div class="field"><button class="btn-ghost" data-act="export">Export everything as CSV</button>' +
         '<p class="hint">' + (state.settings.lastExport ? "Last export " + esc(state.settings.lastExport) + "." : "Never exported.") + ' Back this up monthly.</p></div>' +
+        '<p class="hint" style="text-align:center;opacity:.55;margin-top:14px">Field Notes v' + APP_VERSION + '</p>' +
       "</div>";
   }
 
@@ -723,6 +788,7 @@
     var fi = document.getElementById("fileIn");
     if (fi) fi.addEventListener("change", handleFile);
 
+    renderNudge();
     window.__FIELD_NOTES_READY = true;
   }
 
@@ -738,6 +804,28 @@
         if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} }
       }
     }, 120);
+  }
+
+  function renderNudge() {
+    var host = document.getElementById("nudge");
+    if (!host) return;
+    var c = nudgeFor ? byId(nudgeFor) : null;
+    var i = c ? coldInfo(c) : null;
+    if (!c || !i || !i.cold) { host.hidden = true; host.innerHTML = ""; return; }
+    host.hidden = false;
+    host.innerHTML =
+      '<div class="nudge-body">' +
+        '<span class="nudge-lbl">Still in touch?</span>' +
+        '<strong>' + esc(c.name) + "</strong>" +
+        '<span class="nudge-sub">' + c.tier + " · " +
+          (i.everMarked ? i.days + " days since you marked contact"
+                        : i.days + " days in this tier, never marked") + "</span>" +
+      "</div>" +
+      '<div class="nudge-acts">' +
+        '<button class="tbtn primary" data-act="marktouch" data-id="' + c.id + '">Yes, recently</button>' +
+        '<button class="tbtn" data-act="nudgeopen">Open</button>' +
+        '<button class="tbtn" data-act="nudgesnooze">Later</button>' +
+      "</div>";
   }
 
   var toastTimer = null;
@@ -797,6 +885,12 @@
 
     switch (act) {
       case "toggle": openId = openId === id ? null : id; render(); break;
+      case "opencontact": {
+        var oc = byId(id);
+        if (oc) { tab = "tiering"; browseBy = "tier"; tierFilter = oc.tier; tierQuery = ""; searchAll = false; openId = oc.id; }
+        render();
+        break;
+      }
       case "browseby": browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; render(); break;
       case "filter": tierFilter = val; tierQuery = ""; searchAll = false; openId = null; render(); break;
       case "filterclose": tab = "tiering"; browseBy = "tier"; tierFilter = "Close"; render(); break;
@@ -807,7 +901,11 @@
       case "dismissonboard": state.settings.onboarded = true; commit(); break;
       case "setcity": travelQuery = val; render(); break;
 
-      case "settier": c.tier = val; c.pending = false; touch(c); commit(); break;
+      case "settier":
+        if (c.tier !== val) c.tierSince = today();   // new tier, fresh clock
+        c.tier = val; c.pending = false; c.snoozedUntil = "";
+        touch(c); commit();
+        break;
       case "setpurpose": c.purpose = c.purpose === val ? "" : val; touch(c); commit(); break;
       case "setpot": c.potential = c.potential === val ? "" : val; touch(c); commit(); break;
       case "setrole": {
@@ -818,10 +916,29 @@
       }
       case "roleother": c.showOther = !c.showOther; if (!c.showOther) { c.roleOther = ""; touch(c); } render(); break;
       case "confirmloc": c.locationConfirmed = today(); touch(c); commit(); toast("City confirmed"); break;
-      case "logtalk":
-        c.lastContact = today(); c.touches = (c.touches || 0) + 1; touch(c); commit();
-        toast("Logged — " + c.name.split(" ")[0] + " is warm again");
+      case "marktouch": case "logtalk": {
+        c.lastContact = today();
+        c.snoozedUntil = "";
+        c.touches = (c.touches || 0) + 1;
+        touch(c);
+        if (nudgeFor === c.id) nudgeFor = null;
+        commit();
+        toast("Clock reset for " + (c.name || "").split(" ")[0]);
         break;
+      }
+      case "nudgesnooze": {
+        var n = byId(nudgeFor);
+        if (n) { n.snoozedUntil = addDays(today(), SNOOZE_DAYS); touch(n); }
+        nudgeFor = null; commit();
+        break;
+      }
+      case "nudgeopen": {
+        var o = byId(nudgeFor);
+        nudgeFor = null;
+        if (o) { tab = "tiering"; browseBy = "tier"; tierFilter = o.tier; searchAll = false; tierQuery = ""; openId = o.id; }
+        render();
+        break;
+      }
 
       case "delete": deleteContact(c); break;
       case "undodelete": undoDelete(); break;
@@ -1169,6 +1286,8 @@
      ============================================================ */
   state = load();
   save();
+  var firstNudge = nudgeCandidate();
+  nudgeFor = firstNudge ? firstNudge.id : null;
   render();
   if (window.FNSync && FNSync.enabled()) doSync(true);
 })();
