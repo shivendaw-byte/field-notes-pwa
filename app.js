@@ -25,10 +25,11 @@
      The clock does NOT require logging. It starts when someone enters a tracked
      tier and resets whenever you confirm you are in touch, so this works fine
      for someone who never logs a single conversation. */
-  var COLD_DAYS = { Close: 21, Middle: 60 };
+  var COLD_DAYS = { Close: 21, Middle: 60, Networking: 180 };
   var SNOOZE_DAYS = 10;
+  var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "5.4";
+  var APP_VERSION = "6.0";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -38,7 +39,7 @@
   var memoryFallback = null;
   var state, tab = "tiering", openId = null;
   var browseBy = "tier", tierFilter = "Close", groupFilter = "";
-  var tierQuery = "", travelQuery = "", searchAll = false;
+  var tierQuery = "", travelQuery = "", logQuery = "", searchAll = false;
   var nudgeFor = null;   // contact id currently shown in the reminder card
   var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
@@ -192,6 +193,10 @@
     for (var i = 0; i < POTENTIAL.length; i++) if (POTENTIAL[i].key === p) return POTENTIAL[i].lvl;
     return 0;
   }
+  function potBlurb(p) {
+    for (var i = 0; i < POTENTIAL.length; i++) if (POTENTIAL[i].key === p) return POTENTIAL[i].blurb;
+    return "";
+  }
   function potMeter(p) {
     var found = null;
     POTENTIAL.forEach(function (x) { if (x.key === p) found = x; });
@@ -231,6 +236,7 @@
   function nudgeCandidate() {
     var best = null, bestOver = -1;
     state.contacts.forEach(function (c) {
+      if (potLevel(c.potential) < MIN_POTENTIAL) return;
       var i = coldInfo(c);
       if (!i || !i.cold || i.snoozed) return;
       if (i.over > bestOver) { best = c; bestOver = i.over; }
@@ -246,9 +252,7 @@
     if (c.location) sub.push("<span>" + esc(c.location) + "</span>");
     if (c.notes) sub.push('<span style="opacity:.8">' + esc(c.notes.slice(0, 64)) + (c.notes.length > 64 ? "…" : "") + "</span>");
 
-    var markedToday = c.lastContact === today();
     return '<div class="row' + (openId === c.id ? " open" : "") + '" data-id="' + c.id + '">' +
-      '<div class="row-top">' +
       '<button class="row-head" data-act="toggle" data-id="' + c.id + '" aria-expanded="' + (openId === c.id) + '">' +
         '<span style="flex:1;min-width:0">' +
           '<span class="row-meta">' +
@@ -263,17 +267,7 @@
         "</span>" +
         '<span class="caret" aria-hidden="true">▾</span>' +
       "</button>" +
-      '<button class="quicktalk' + (markedToday ? " on" : "") + '" data-act="marktouch" data-id="' + c.id +
-        '" aria-label="Mark that you talked to ' + esc(c.name) + ' today" title="Talked today">' +
-        (markedToday ? "✓" : "Talked") + "</button>" +
-      "</div>" +
       '<div class="row-body">' +
-        '<div class="field rowsplit" style="gap:8px">' +
-          '<button class="btn-ghost talk" data-act="marktouch" data-id="' + c.id + '">' +
-            (c.lastContact === today() ? "✓ Talked today" : "Talked today") + "</button>" +
-          (c.lastContact && c.lastContact !== today()
-            ? '<span class="hint" style="margin:0">last ' + daysSince(c.lastContact) + "d ago</span>" : "") +
-        "</div>" +
         '<div class="field"><label class="f">Tier — tap to move</label><div class="chips">' +
           TIERS.map(function (t) {
             return '<button class="chip' + (c.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="settier" data-id="' + c.id + '" data-val="' + t + '">' + t + "</button>";
@@ -461,53 +455,106 @@
       "</div>";
   }
 
-  /* Compact line: name, tier, how long since contact. The number is the point. */
-  function coldRowHTML(c) {
-    var i = coldInfo(c);
-    var since = !i ? ""
-      : i.everMarked
-        ? (i.days === 0 ? "in touch today" : i.days === 1 ? "yesterday" : i.days + " days")
-        : "added " + i.days + "d ago, never marked";
-    return '<div class="logrow' + (i && i.cold ? " cold" : "") + '">' +
+  /* Rows for the two screens where tracking is allowed to be visible: the Log
+     (you chose to open it) and Reconnect (you chose to be prompted). Never on
+     the contact list itself. */
+  function logRowHTML(c, mode) {
+    var d = daysSince(c.lastContact);
+    var since = !c.lastContact ? "not logged yet"
+      : d === 0 ? "logged today"
+      : d === 1 ? "yesterday"
+      : d + " days ago";
+    return '<div class="logrow' + (d === 0 ? " donetoday" : "") + '">' +
       '<span class="body" data-act="opencontact" data-id="' + c.id + '">' +
         '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
-        '<span class="d">' + tierBadge(c.tier) +
-          '<span class="' + (i && i.cold ? "stale" : "") + '">' + since + "</span>" +
-          potMeter(c.potential) +
-        "</span>" +
+        '<span class="d">' + tierBadge(c.tier) + "<span>" + since + "</span>" + potMeter(c.potential) + "</span>" +
       "</span>" +
-      '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">Talked</button>' +
+      (mode === "undo"
+        ? '<button class="logbtn undo" data-act="marktouch" data-id="' + c.id + '">Undo</button>'
+        : '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">Log</button>') +
     "</div>";
   }
 
-  function viewReconnect() {
-    var tracked = state.contacts.filter(function (c) { return !!coldInfo(c); });
-    var cold = tracked.filter(function (c) { return coldInfo(c).cold; });
-    // Sort by potential first, lateness second: the question this app answers is
-    // "who is worth reaching out to", not "who is most overdue".
-    cold.sort(function (a, b) {
+  function viewLog() {
+    var t = today();
+    var active = state.contacts.filter(function (c) { return !c.pending; });
+    var loggedToday = active.filter(function (c) { return c.lastContact === t; });
+    loggedToday.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    var results = logQuery.trim()
+      ? searchContacts(active, logQuery).filter(function (c) { return c.lastContact !== t; }).slice(0, 15)
+      : [];
+
+    return '<div class="eyebrow">Today</div><h2>Daily log</h2>' +
+      '<p class="sub">Run back through the day and log whoever you actually had a real conversation with. ' +
+      'You decide what counts as significant \u2014 this is the only thing that feeds Reconnect.</p>' +
+
+      '<div class="searchwrap"><input type="search" id="logSearch" value="' + esc(logQuery) +
+        '" placeholder="Search a name to log them" autocomplete="off" enterkeyhint="search">' +
+        (logQuery ? '<button class="clearx" data-act="clearlog" aria-label="Clear">\u00d7</button>' : "") +
+      "</div>" +
+
+      (logQuery.trim()
+        ? (results.length
+            ? '<div class="loglist">' + results.map(function (c) { return logRowHTML(c, "log"); }).join("") + "</div>"
+            : '<div class="empty">Nobody matches \u201c' + esc(logQuery) + '\u201d.</div>')
+        : "") +
+
+      (loggedToday.length
+        ? '<h3 class="logsec">Logged today <span class="n">' + loggedToday.length + "</span></h3>" +
+          '<div class="loglist">' + loggedToday.map(function (c) { return logRowHTML(c, "undo"); }).join("") + "</div>"
+        : (logQuery.trim() ? "" :
+            '<div class="card"><h3>Nothing logged yet today</h3>' +
+            '<p class="note">Search a name above and tap Log. Skipping days costs you nothing \u2014 ' +
+            'an empty day just means nothing worth recording happened.</p></div>'));
+  }
+
+  /* Reconnect is framed as opportunity, not debt: it only ever lists people you
+     yourself rated as worth deepening, ordered by that rating. */
+  function worthReaching() {
+    return state.contacts.filter(function (c) {
+      if (potLevel(c.potential) < MIN_POTENTIAL) return false;
+      var i = coldInfo(c);
+      return i && i.cold;
+    }).sort(function (a, b) {
       var pa = potLevel(a.potential), pb = potLevel(b.potential);
       if (pa !== pb) return pb - pa;
       return coldInfo(b).over - coldInfo(a).over;
     });
-    var fine = tracked.length - cold.length;
+  }
 
-    return '<div class="eyebrow">Quietly keeping score</div><h2>Reconnect</h2>' +
-      '<p class="sub">Close and Middle only. You never have to log anything — the clock starts when ' +
-      'someone joins one of those tiers and resets when you tap <strong>In touch</strong>. ' +
-      'Networking and Acquaintance are left alone on purpose.</p>' +
+  function reachRowHTML(c) {
+    var where = [c.company, c.school, c.location].filter(Boolean).join(" \u00b7 ");
+    return '<div class="logrow reach">' +
+      '<span class="body" data-act="opencontact" data-id="' + c.id + '">' +
+        '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+        '<span class="d">' + tierBadge(c.tier) + (where ? "<span>" + esc(where) + "</span>" : "") + "</span>" +
+        '<span class="reach-why">' + potMeter(c.potential) + "<span>" + esc(potBlurb(c.potential)) + "</span></span>" +
+      "</span>" +
+      '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">Log</button>' +
+    "</div>";
+  }
 
-      (!tracked.length
-        ? '<div class="card"><h3>Nobody tracked yet</h3><p class="note">Move someone into Close or Middle ' +
-          'and they show up here after ' + COLD_DAYS.Close + ' and ' + COLD_DAYS.Middle + ' days respectively.</p></div>'
-        : cold.length
-          ? '<h3 class="logsec">Been a while <span class="n">' + cold.length + "</span></h3>" +
-            '<div class="loglist">' + cold.map(coldRowHTML).join("") + "</div>" +
-            (fine ? '<p class="hint" style="margin-top:14px">' + fine + " other" + (fine === 1 ? " is" : "s are") +
-                    " still inside their window.</p>" : "")
-          : '<div class="card ok-card"><h3>Nothing slipping</h3><p class="note">All ' + tracked.length +
-            " tracked " + (tracked.length === 1 ? "person is" : "people are") + " inside their window. " +
-            "Close resets after " + COLD_DAYS.Close + " days, Middle after " + COLD_DAYS.Middle + ".</p></div>");
+  function viewReconnect() {
+    var list = worthReaching();
+    var rated = state.contacts.filter(function (c) {
+      return potLevel(c.potential) >= MIN_POTENTIAL && !c.pending;
+    }).length;
+
+    return '<div class="eyebrow">Opportunities</div><h2>Worth reaching out to</h2>' +
+      '<p class="sub">People you rated as worth deepening, who you have not logged in a while. ' +
+      'Anyone marked Low potential, or never rated, is left out on purpose. ' +
+      'Close ' + COLD_DAYS.Close + 'd \u00b7 Middle ' + COLD_DAYS.Middle + 'd \u00b7 Networking ' + COLD_DAYS.Networking + 'd.</p>' +
+
+      (!rated
+        ? '<div class="card"><h3>Nothing rated yet</h3><p class="note">Open anyone and set ' +
+          '<strong>Potential to deepen</strong>. Only Some, Strong and Rare ever appear here \u2014 ' +
+          'that rating is what makes this more than a contact list.</p></div>'
+        : list.length
+          ? '<div class="loglist">' + list.map(reachRowHTML).join("") + "</div>" +
+            '<p class="hint" style="margin-top:14px">' + rated + " people are rated worth deepening. " +
+            "Logging someone in the Daily log clears them from here.</p>"
+          : '<div class="card ok-card"><h3>Nothing to chase</h3><p class="note">All ' + rated +
+            " of the people you rated worth deepening have been logged recently.</p></div>");
   }
 
   function viewTravel() {
@@ -852,12 +899,17 @@
 
     document.getElementById("view").innerHTML =
       tab === "tiering" ? viewTiering() :
+      tab === "log" ? viewLog() :
       tab === "reconnect" ? viewReconnect() :
       tab === "travel" ? viewTravel() : viewAdd();
 
     var ts = document.getElementById("tierSearch");
     if (ts && tab === "tiering") {
       ts.addEventListener("input", function () { tierQuery = ts.value; renderListOnly(); });
+    }
+    var lg = document.getElementById("logSearch");
+    if (lg && tab === "log") {
+      lg.addEventListener("input", function () { logQuery = lg.value; renderListOnly(); });
     }
     var cl = document.getElementById("clSearch");
     if (cl && cleanup) {
@@ -897,14 +949,12 @@
     host.hidden = false;
     host.innerHTML =
       '<div class="nudge-body">' +
-        '<span class="nudge-lbl">Talked to them lately?</span>' +
+        '<span class="nudge-lbl">Worth reaching out to</span>' +
         '<strong>' + esc(c.name) + "</strong>" +
-        '<span class="nudge-sub">' + c.tier + " · " +
-          (i.everMarked ? i.days + " days since you marked contact"
-                        : i.days + " days in this tier, never marked") + "</span>" +
+        '<span class="nudge-sub">' + c.tier + " · " + esc(potBlurb(c.potential)) + "</span>" +
       "</div>" +
       '<div class="nudge-acts">' +
-        '<button class="tbtn primary" data-act="marktouch" data-id="' + c.id + '">Yes, recently</button>' +
+        '<button class="tbtn primary" data-act="marktouch" data-id="' + c.id + '">Spoke recently</button>' +
         '<button class="tbtn" data-act="nudgeopen">Open</button>' +
         '<button class="tbtn" data-act="nudgesnooze">Later</button>' +
       "</div>";
@@ -1131,6 +1181,7 @@
         }
         break;
 
+      case "clearlog": logQuery = ""; render(); break;
       case "clopen": cleanup = { filter: "untagged", marked: {}, q: "" }; tab = "add"; render(); break;
       case "clexit": cleanup = null; render(); break;
       case "clfilter": cleanup.filter = val; render(); break;
