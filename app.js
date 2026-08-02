@@ -9,12 +9,17 @@
      Constants
      ============================================================ */
   var TIERS = ["Close", "Middle", "Acquaintance", "Networking"];
+  /* Five levels: Rare and Low are the extremes, with three usable steps between
+     so "Some" stops absorbing everything ambiguous. Existing Some ratings are
+     deliberately left alone — nothing silently rewrites a judgement you made. */
   var POTENTIAL = [
-    { key: "Rare",   lvl: 4, blurb: "the standout — rare" },
-    { key: "Strong", lvl: 3, blurb: "clear pull toward more" },
-    { key: "Some",   lvl: 2, blurb: "could go somewhere" },
-    { key: "Low",    lvl: 1, blurb: "fine as it is" }
+    { key: "Rare",     lvl: 5, blurb: "the standout — rare" },
+    { key: "Strong",   lvl: 4, blurb: "clear pull toward more" },
+    { key: "Moderate", lvl: 3, blurb: "genuine, worth tending" },
+    { key: "Some",     lvl: 2, blurb: "could go somewhere" },
+    { key: "Low",      lvl: 1, blurb: "fine as it is" }
   ];
+  var POT_STEPS = 5;
   /* Notes shortcuts. These are NOT structured fields — tapping one types plain
      text into the notes box, so ordinary search still finds it and nothing has
      to be filled in for a contact to be complete. Revealed only when the user
@@ -37,15 +42,15 @@
   /* Days before someone becomes an opportunity, by tier and by how much
      potential you gave them. Higher potential surfaces sooner. */
   var COLD_TABLE = {
-    Close:        { Rare: 14,  Strong: 21,  Some: 35  },
-    Middle:       { Rare: 40,  Strong: 60,  Some: 90  },
-    Acquaintance: { Rare: 60,  Strong: 100, Some: 150 },
-    Networking:   { Rare: 120, Strong: 180, Some: 240 }
+    Close:        { Rare: 14,  Strong: 21,  Moderate: 28,  Some: 35  },
+    Middle:       { Rare: 40,  Strong: 60,  Moderate: 75,  Some: 90  },
+    Acquaintance: { Rare: 60,  Strong: 100, Moderate: 125, Some: 150 },
+    Networking:   { Rare: 120, Strong: 180, Moderate: 210, Some: 240 }
   };
   var SNOOZE_DAYS = 10;
   var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "7.1";
+  var APP_VERSION = "8.0";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -99,6 +104,12 @@
     if (!s.settings || typeof s.settings !== "object") s.settings = {};
     if (s.settings.lastExport === undefined) s.settings.lastExport = "";
     if (s.settings.onboarded === undefined) s.settings.onboarded = false;
+    /* Display preferences. Defaults reproduce the behaviour that shipped, so an
+       existing install sees no change until it opts in. */
+    if (!s.settings.subtitle || typeof s.settings.subtitle !== "object") {
+      s.settings.subtitle = { location: true, notes: false, company: false, school: false, potential: false };
+    }
+    if (!s.settings.reconnect) s.settings.reconnect = "on";   // on | background | off
     if (!s.updatedAt) s.updatedAt = nowISO();
     s.version = 5;
     s.contacts.forEach(function (c) {
@@ -226,8 +237,11 @@
     POTENTIAL.forEach(function (x) { if (x.key === p) found = x; });
     if (!found) return "";
     var bars = "";
-    for (var i = 1; i <= 4; i++) bars += '<i class="' + (i <= found.lvl ? "on" : "") + '"></i>';
-    return '<span class="pot" title="' + found.blurb + '">' + bars + "</span>";
+    for (var i = 1; i <= POT_STEPS; i++) {
+      bars += '<i class="' + (i <= found.lvl ? "on" : "") + '"></i>';
+    }
+    return '<span class="pot lv' + found.lvl + '" title="' + esc(found.key + " \u2014 " + found.blurb) +
+      '" aria-label="Potential ' + found.lvl + ' of ' + POT_STEPS + '">' + bars + "</span>";
   }
   function tierBadge(t) { return '<span class="badge t-' + t.toLowerCase() + '">' + t + "</span>"; }
   function digits(s) { return String(s || "").replace(/[^\d+]/g, ""); }
@@ -275,7 +289,12 @@
   /* The one person worth nudging about right now, or null. Most overdue first;
      snoozed people are skipped. Deliberately returns ONE — a queue would be
      the pressure this is meant to avoid. */
+  function reconnectMode() { return (state.settings && state.settings.reconnect) || "on"; }
+  function reconnectVisible() { return reconnectMode() === "on"; }
+  function reconnectActive() { return reconnectMode() !== "off"; }
+
   function nudgeCandidate() {
+    if (!reconnectActive()) return null;
     var best = null, bestOver = -1;
     state.contacts.forEach(function (c) {
       if (potLevel(c.potential) < MIN_POTENTIAL) return;
@@ -291,9 +310,16 @@
        about when you last spoke — recency lives in Reconnect, not on every row,
        because seeing it everywhere is what turns this into a guilt tracker. */
     var sub = [];
-    // Notes never appear in the subtitle \u2014 imported, chip-tagged, or freeform.
-    // They stay searchable (see haystack()) but only readable inside the profile.
-    if (c.location) sub.push("<span>" + esc(c.location) + "</span>");
+    /* What appears here is entirely user-controlled (Settings > Row subtitle).
+       Notes stay searchable regardless of whether they are shown. */
+    var subCfg = state.settings.subtitle || {};
+    if (subCfg.location && c.location) sub.push("<span>" + esc(c.location) + "</span>");
+    if (subCfg.company && c.company) sub.push("<span>" + esc(c.company) + "</span>");
+    if (subCfg.school && c.school) sub.push("<span>" + esc(c.school) + "</span>");
+    if (subCfg.potential && c.potential) sub.push("<span>" + esc(c.potential) + " potential</span>");
+    if (subCfg.notes && c.notes) {
+      sub.push('<span style="opacity:.8">' + esc(c.notes.slice(0, 64)) + (c.notes.length > 64 ? "\u2026" : "") + "</span>");
+    }
 
     return '<div class="row' + (openId === c.id ? " open" : "") + '" data-id="' + c.id + '">' +
       '<button class="row-head" data-act="toggle" data-id="' + c.id + '" aria-expanded="' + (openId === c.id) + '">' +
@@ -573,6 +599,98 @@
             " of the people you rated worth deepening have been logged recently.</p></div>");
   }
 
+  var SUBTITLE_FIELDS = [
+    { key: "location",  label: "City" },
+    { key: "company",   label: "Company" },
+    { key: "school",    label: "School" },
+    { key: "potential", label: "Potential level" },
+    { key: "notes",     label: "Notes preview" }
+  ];
+
+  function viewSettings() {
+    var st = state.settings;
+    var sub = st.subtitle || {};
+    var mode = reconnectMode();
+    var rated = state.contacts.filter(function (c) { return c.potential === "Some"; }).length;
+    var total = state.contacts.length;
+    var age = daysSince(st.lastExport);
+
+    function toggleRow(key, label, on, act) {
+      return '<button class="setrow" data-act="' + act + '" data-val="' + key + '">' +
+        '<span class="setrow-label">' + label + "</span>" +
+        '<span class="switch' + (on ? " on" : "") + '"><i></i></span></button>';
+    }
+
+    return '<div class="eyebrow">Everything, in one place</div><h2>Settings</h2>' +
+      '<p class="sub">Nothing here changes your contacts \u2014 only what the app shows you and how it behaves.</p>' +
+
+      /* --- what a row shows --- */
+      '<div class="card"><h3>Row subtitle</h3>' +
+        '<p class="note">The small grey line under each name in your contact list. ' +
+        'Notes stay searchable whether or not you show them here.</p>' +
+        SUBTITLE_FIELDS.map(function (f) {
+          return toggleRow(f.key, f.label, !!sub[f.key], "setsub");
+        }).join("") +
+        (Object.keys(sub).filter(function (k) { return sub[k]; }).length === 0
+          ? '<p class="hint">All off \u2014 rows will show names and badges only.</p>' : "") +
+      "</div>" +
+
+      /* --- reconnect behaviour --- */
+      '<div class="card"><h3>Reconnect</h3>' +
+        '<p class="note">Surfaces people you rated worth deepening who you have not logged in a while.</p>' +
+        '<div class="chips">' +
+          [["on", "Tab + reminder"], ["background", "Reminder only"], ["off", "Off"]].map(function (o) {
+            return '<button class="chip' + (mode === o[0] ? " on" : "") + '" data-act="setrecon" data-val="' + o[0] + '">' + o[1] + "</button>";
+          }).join("") +
+        "</div>" +
+        '<p class="hint">' +
+          (mode === "on" ? "The Reach tab is visible and one reminder card appears when you open the app."
+           : mode === "background" ? "The Reach tab is hidden. Tracking continues and you still get the reminder card on open."
+           : "Fully off. No tab, no reminder. Field Notes behaves as a plain contact tracker.") +
+        "</p>" +
+      "</div>" +
+
+      /* --- potential scale --- */
+      '<div class="card"><h3>Potential scale</h3>' +
+        '<p class="note">Five levels, strongest first. Only Some and above ever appear in Reconnect.</p>' +
+        POTENTIAL.map(function (x) {
+          return '<div class="scalerow">' + potMeter(x.key) +
+            '<span class="scalekey">' + x.key + "</span>" +
+            '<span class="scaleblurb">' + esc(x.blurb) + "</span></div>";
+        }).join("") +
+        (rated ? '<p class="hint">' + rated + ' contact' + (rated === 1 ? " is" : "s are") +
+          ' still rated <strong>Some</strong> from the old four-level scale. Moderate now sits above it, ' +
+          'so re-rate them as you come across them \u2014 nothing was changed automatically.</p>' : "") +
+      "</div>" +
+
+      /* --- cleanup, moved out of Add --- */
+      '<div class="card"><h3>Clean up contacts</h3>' +
+        '<p class="note">Bulk-remove people who are no longer part of your life. Opens on contacts with ' +
+        'no school or company tag \u2014 usually the oldest ones.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="clopen">Start cleaning up \u2192</button></div>' +
+      "</div>" +
+
+      /* --- backup, moved out of Add --- */
+      '<div class="card"><h3>Backup</h3>' +
+        '<p class="note">Your ' + total + ' contacts live in this browser only. Export writes a CSV you can ' +
+        'keep in cloud storage; importing it back restores everything.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="export">Export everything as CSV</button></div>' +
+        '<div class="field"><input type="file" id="fileIn" accept=".csv,.vcf"></div>' +
+        '<p class="note" id="importStatus"></p>' +
+        '<p class="hint' + (!st.lastExport || age > 30 ? " stale" : "") + '">' +
+          (st.lastExport ? "Last export " + esc(st.lastExport) + " (" + age + " days ago)." : "You have never exported a backup.") +
+        "</p>" +
+      "</div>" +
+
+      syncCardHTML() +
+
+      '<div class="card"><h3>About</h3>' +
+        '<p class="note">Field Notes v' + APP_VERSION + '</p>' +
+        '<p class="hint">Contacts never leave this device unless you turn on sync, and sync uploads only ' +
+        'ciphertext. Nothing is sent anywhere else.</p>' +
+      "</div>";
+  }
+
   function viewTravel() {
     var q = travelQuery.trim();
     var list = [];
@@ -785,7 +903,6 @@
 
   /* ---------- add / queue ---------- */
   function viewAdd() {
-    if (cleanup) return viewCleanup();
     if (importPreview) return viewImportPreview();
 
     var pending = state.contacts.filter(function (c) { return c.pending; });
@@ -843,21 +960,12 @@
             '<div class="field"><button class="btn-danger" data-act="queuedelete" data-id="' + cur.id + '">Delete this contact</button></div>') +
       "</div>" +
 
-      syncCardHTML() +
-
-      '<div class="card"><h3>Clean up contacts</h3>' +
-        '<p class="note">Bulk-remove people who are no longer part of your life. Defaults to contacts with ' +
-        'no school or company tag — usually the oldest ones.</p>' +
-        '<div class="field"><button class="btn-ghost" data-act="clopen">Start cleaning up →</button></div>' +
-      "</div>" +
-
-      '<div class="card"><h3>Import and export</h3>' +
-        '<p class="note">CSV columns read: name, tier, potential, company, school, location, notes, phone, email. You get a review screen before anything is saved. LinkedIn’s Connections.csv works directly.</p>' +
-        '<div class="field"><input type="file" id="fileIn" accept=".csv,.vcf"></div>' +
-        '<p class="note" id="importStatus"></p>' +
-        '<div class="field"><button class="btn-ghost" data-act="export">Export everything as CSV</button>' +
-        '<p class="hint">' + (state.settings.lastExport ? "Last export " + esc(state.settings.lastExport) + "." : "Never exported.") + ' Back this up monthly.</p></div>' +
-        '<p class="hint" style="text-align:center;opacity:.55;margin-top:14px">Field Notes v' + APP_VERSION + '</p>' +
+      /* Cleanup, backup and sync now live in Settings so this tab stays about
+         one thing: getting a person into the app. */
+      '<div class="card"><h3>Bringing people in</h3>' +
+        '<p class="note">Importing a CSV, backing up, cleaning out old contacts and device sync all moved ' +
+        'to Settings — the gear icon at the top right.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="opensettings">Open Settings →</button></div>' +
       "</div>";
   }
 
@@ -893,6 +1001,7 @@
      Render
      ============================================================ */
   function render() {
+    if (tab === "reconnect" && !reconnectVisible()) tab = "tiering";
     document.getElementById("totalCount").textContent = state.contacts.length + " contacts";
     var pend = state.contacts.filter(function (c) { return c.pending; }).length;
     var pill = document.getElementById("pendingPill");
@@ -908,13 +1017,18 @@
       var on = tabs[i].dataset.tab === tab;
       tabs[i].classList.toggle("on", on);
       tabs[i].setAttribute("aria-selected", on ? "true" : "false");
+      if (tabs[i].dataset.tab === "reconnect") tabs[i].hidden = !reconnectVisible();
     }
+    var gear = document.getElementById("settingsBtn");
+    if (gear) gear.classList.toggle("on", tab === "settings");
 
     var boot = document.getElementById("bootMsg");
     if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
 
     document.getElementById("view").innerHTML =
       tab === "tiering" ? viewTiering() :
+      cleanup ? viewCleanup() :
+      tab === "settings" ? viewSettings() :
       tab === "log" ? viewLog() :
       tab === "reconnect" ? viewReconnect() :
       tab === "travel" ? viewTravel() : viewAdd();
@@ -1199,8 +1313,19 @@
         }
         break;
 
+      case "opensettings": tab = "settings"; openId = null; importPreview = null; cleanup = null; render(); break;
+      case "setsub":
+        state.settings.subtitle[val] = !state.settings.subtitle[val];
+        commit();
+        break;
+      case "setrecon":
+        state.settings.reconnect = val;
+        if (val !== "on" && tab === "reconnect") tab = "tiering";
+        if (val === "off") nudgeFor = null;
+        commit();
+        break;
       case "clearlog": logQuery = ""; render(); break;
-      case "clopen": cleanup = { filter: "untagged", marked: {}, q: "" }; tab = "add"; render(); break;
+      case "clopen": cleanup = { filter: "untagged", marked: {}, q: "" }; tab = "settings"; render(); break;
       case "clexit": cleanup = null; render(); break;
       case "clfilter": cleanup.filter = val; render(); break;
       case "clnone": cleanup.marked = {}; render(); break;
