@@ -9,14 +9,23 @@
      Constants
      ============================================================ */
   var TIERS = ["Close", "Middle", "Acquaintance", "Networking"];
-  var PURPOSES = ["Chill hang", "Spontaneous hang", "Deep conversation", "Unsure"];
   var POTENTIAL = [
     { key: "Rare",   lvl: 4, blurb: "the standout — rare" },
     { key: "Strong", lvl: 3, blurb: "clear pull toward more" },
     { key: "Some",   lvl: 2, blurb: "could go somewhere" },
     { key: "Low",    lvl: 1, blurb: "fine as it is" }
   ];
-  var ROLES = ["Family", "Professor", "Mentor", "Coworker", "Classmate", "Teammate"];
+  /* Notes shortcuts. These are NOT structured fields — tapping one types plain
+     text into the notes box, so ordinary search still finds it and nothing has
+     to be filled in for a contact to be complete. Revealed only when the user
+     types the trigger word, so the form stays empty by default. */
+  var NOTE_CHIPS = {
+    role:     ["Family", "Friend", "Professional"],
+    quality:  ["\ud83e\udde0 Intellectual", "\ud83c\udf31 Present", "\u2600\ufe0f Positive",
+               "\u26a1 Spontaneous", "\ud83d\ude80 Growth-oriented"],
+    outreach: ["\ud83d\udcac Talk", "\ud83c\udf89 Do", "\ud83e\udd1d Build", "\u2764\ufe0f Care"]
+  };
+  var NOTE_TRIGGERS = ["role", "quality", "outreach"];
 
   /* How long before someone counts as going cold. Close and Middle only —
      Networking and Acquaintance are deliberately absent, so the 800-odd people
@@ -25,11 +34,18 @@
      The clock does NOT require logging. It starts when someone enters a tracked
      tier and resets whenever you confirm you are in touch, so this works fine
      for someone who never logs a single conversation. */
-  var COLD_DAYS = { Close: 21, Middle: 60, Networking: 180 };
+  /* Days before someone becomes an opportunity, by tier and by how much
+     potential you gave them. Higher potential surfaces sooner. */
+  var COLD_TABLE = {
+    Close:        { Rare: 14,  Strong: 21,  Some: 35  },
+    Middle:       { Rare: 40,  Strong: 60,  Some: 90  },
+    Acquaintance: { Rare: 60,  Strong: 100, Some: 150 },
+    Networking:   { Rare: 120, Strong: 180, Some: 240 }
+  };
   var SNOOZE_DAYS = 10;
   var MIN_POTENTIAL = 2;   // Some/Strong/Rare surface; Low and unset never do.
 
-  var APP_VERSION = "6.0";
+  var APP_VERSION = "7.0";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -43,7 +59,7 @@
   var nudgeFor = null;   // contact id currently shown in the reminder card
   var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
-  var qDraft = { tier: "Middle", purpose: "", potential: "" };
+  var qDraft = { tier: "Middle", potential: "" };
   var deferredPrompt = null;
   var lastDeleted = null, undoTimer = null;
   var importPreview = null;
@@ -67,10 +83,10 @@
      ============================================================ */
   function blankContact(over) {
     var c = {
-      id: uid(), name: "", tier: "Acquaintance", purpose: "", potential: "",
+      id: uid(), name: "", tier: "Acquaintance", potential: "",
       company: "", school: "", location: "", locationConfirmed: "",
       notes: "", phone: "", email: "", pending: false, added: "",
-      roles: [], roleOther: "", lastContact: "", prevContact: "", touches: 0,
+      lastContact: "", prevContact: "", touches: 0,
       tierSince: "", snoozedUntil: "", updatedAt: nowISO()
     };
     if (over) for (var k in over) if (over.hasOwnProperty(k)) c[k] = over[k];
@@ -86,8 +102,17 @@
     if (!s.updatedAt) s.updatedAt = nowISO();
     s.version = 5;
     s.contacts.forEach(function (c) {
-      if (!Array.isArray(c.roles)) c.roles = [];
-      if (c.roleOther === undefined) c.roleOther = "";
+      // Role and "reach out for" were removed; keep what was typed by moving it
+      // into notes, where the chip shortcuts now live.
+      var carried = [].concat(Array.isArray(c.roles) ? c.roles : [],
+                              c.roleOther ? [c.roleOther] : [],
+                              (c.purpose && c.purpose !== "Networking") ? [c.purpose] : [])
+                      .filter(Boolean);
+      if (carried.length) {
+        var add = carried.filter(function (v) { return (c.notes || "").indexOf(v) === -1; });
+        if (add.length) c.notes = (c.notes ? c.notes.replace(/\s*$/, "") + " " : "") + add.join(" ");
+      }
+      delete c.roles; delete c.roleOther; delete c.purpose; delete c.showOther;
       if (c.lastContact === undefined) c.lastContact = "";
       if (typeof c.touches !== "number") c.touches = 0;
       if (c.snoozedUntil === undefined) c.snoozedUntil = "";
@@ -95,8 +120,6 @@
       // Baseline for the reconnect clock when nothing has ever been logged.
       if (!c.tierSince) c.tierSince = c.lastContact || c.added || today();
       delete c.interactions;
-      // "Networking" was dropped as a reach-out reason: the tier already says it.
-      if (c.purpose === "Networking") c.purpose = "";
       if (!c.updatedAt) c.updatedAt = nowISO();
       if (!c.id) c.id = uid();
     });
@@ -169,8 +192,9 @@
     return false;
   }
   function haystack(c) {
-    return [c.name, c.company, c.school, c.location, c.purpose, c.potential,
-            c.notes, c.tier, (c.roles || []).join(" "), c.roleOther].filter(Boolean).join(" ");
+    // Notes are searched whole, so chip text is found by ordinary search.
+    return [c.name, c.company, c.school, c.location, c.potential, c.notes, c.tier]
+      .filter(Boolean).join(" ");
   }
   function searchContacts(list, q) {
     if (!q || !q.trim()) return list;
@@ -208,16 +232,51 @@
   function tierBadge(t) { return '<span class="badge t-' + t.toLowerCase() + '">' + t + "</span>"; }
   function digits(s) { return String(s || "").replace(/[^\d+]/g, ""); }
 
-  function roleTags(c) {
-    var all = (c.roles || []).concat(c.roleOther ? [c.roleOther] : []);
-    return all.map(function (r) { return '<span class="tag role">' + esc(r) + "</span>"; }).join("");
+  /* Every chip label, longest first, so "Growth-oriented" is stripped before
+     shorter fragments can partially match it. */
+  var ALL_CHIPS = (function () {
+    var out = [];
+    NOTE_TRIGGERS.forEach(function (k) { out = out.concat(NOTE_CHIPS[k]); });
+    return out.sort(function (a, b) { return b.length - a.length; });
+  })();
+
+  /* The row subtitle shows notes, but never the chip vocabulary: those live at
+     the bottom of the profile only, so no emoji ever reaches the headline. */
+  function notesPreview(c) {
+    var t = c.notes || "";
+    ALL_CHIPS.forEach(function (label) { t = t.split(label).join(" "); });
+    t = t.replace(/[\s,;\u00b7|]+/g, " ").trim();
+    return t;
   }
 
-  /* null means "not tracked at all" — any tier outside COLD_DAYS, or anyone
-     pending. Everyone tracked has a clock, whether or not they were ever
-     logged: it falls back to when they entered the tier. */
+  function activeTriggers(text) {
+    var low = (text || "").toLowerCase();
+    return NOTE_TRIGGERS.filter(function (w) {
+      return new RegExp("(^|[^a-z])" + w + "([^a-z]|$)", "i").test(low);
+    });
+  }
+
+  function noteChipsHTML(c) {
+    var trig = activeTriggers(c.notes);
+    if (!trig.length) {
+      return '<p class="hint" style="margin-top:6px">Type <strong>role</strong>, <strong>quality</strong> ' +
+        'or <strong>outreach</strong> in the notes for shortcuts. Nothing here is required.</p>';
+    }
+    return trig.map(function (k) {
+      return '<div class="notechips"><span class="nc-lbl">' + k + "</span>" +
+        NOTE_CHIPS[k].map(function (v) {
+          return '<button class="chip sm" data-act="notechip" data-id="' + c.id +
+            '" data-k="' + k + '" data-val="' + esc(v) + '">' + esc(v) + "</button>";
+        }).join("") + "</div>";
+    }).join("");
+  }
+
+  /* null means "not tracked": pending, unrated, or rated Low. Everyone else
+     has a clock even if never logged — it falls back to when they entered
+     the tier. Window depends on tier AND potential (see COLD_TABLE). */
   function coldInfo(c) {
-    var limit = COLD_DAYS[c.tier];
+    var byTier = COLD_TABLE[c.tier];
+    var limit = byTier ? byTier[c.potential] : 0;
     if (!limit || c.pending) return null;
     var from = c.lastContact || c.tierSince;
     if (!from) return null;
@@ -250,17 +309,17 @@
        because seeing it everywhere is what turns this into a guilt tracker. */
     var sub = [];
     if (c.location) sub.push("<span>" + esc(c.location) + "</span>");
-    if (c.notes) sub.push('<span style="opacity:.8">' + esc(c.notes.slice(0, 64)) + (c.notes.length > 64 ? "…" : "") + "</span>");
+    var np = notesPreview(c);
+    if (np) sub.push('<span style="opacity:.8">' + esc(np.slice(0, 64)) + (np.length > 64 ? "\u2026" : "") + "</span>");
 
     return '<div class="row' + (openId === c.id ? " open" : "") + '" data-id="' + c.id + '">' +
       '<button class="row-head" data-act="toggle" data-id="' + c.id + '" aria-expanded="' + (openId === c.id) + '">' +
         '<span style="flex:1;min-width:0">' +
           '<span class="row-meta">' +
             '<span class="row-name">' + (esc(c.name) || "Unnamed") + "</span>" +
-            tierBadge(c.tier) + roleTags(c) +
+            tierBadge(c.tier) +
             (c.company ? '<span class="tag co">' + esc(c.company) + "</span>" : "") +
             (c.school ? '<span class="tag sc">' + esc(c.school) + "</span>" : "") +
-            (c.purpose ? '<span class="tag">' + esc(c.purpose) + "</span>" : "") +
             potMeter(c.potential) +
           "</span>" +
           (sub.length ? '<span class="row-sub">' + sub.join("") + "</span>" : "") +
@@ -273,26 +332,13 @@
             return '<button class="chip' + (c.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="settier" data-id="' + c.id + '" data-val="' + t + '">' + t + "</button>";
           }).join("") +
         "</div></div>" +
-        '<div class="field"><label class="f">Role — optional, pick any</label><div class="chips">' +
-          ROLES.map(function (r) {
-            return '<button class="chip' + ((c.roles || []).indexOf(r) !== -1 ? " on" : "") + '" data-p="1" data-act="setrole" data-id="' + c.id + '" data-val="' + r + '">' + r + "</button>";
-          }).join("") +
-          '<button class="chip' + (c.roleOther ? " on" : "") + '" data-p="1" data-act="roleother" data-id="' + c.id + '">Other…</button>' +
-        "</div>" +
-        (c.roleOther || c.showOther
-          ? '<input type="text" style="margin-top:8px" value="' + esc(c.roleOther) + '" data-act="setroleother" data-id="' + c.id + '" placeholder="e.g. Advisor, Landlord">'
-          : "") +
-        "</div>" +
-        '<div class="field"><label class="f">Reach out for</label><div class="chips">' +
-          PURPOSES.map(function (p) {
-            return '<button class="chip' + (c.purpose === p ? " on" : "") + '" data-p="1" data-act="setpurpose" data-id="' + c.id + '" data-val="' + p + '">' + p + "</button>";
-          }).join("") +
-        "</div></div>" +
         '<div class="field"><label class="f">Potential to deepen</label><div class="chips">' +
           POTENTIAL.map(function (p) {
             return '<button class="chip' + (c.potential === p.key ? " on" : "") + '" data-p="1" data-act="setpot" data-id="' + c.id + '" data-val="' + p.key + '" title="' + p.blurb + '">' + p.key + "</button>";
           }).join("") +
         "</div></div>" +
+        '<div class="field"><label class="f">Name</label>' +
+          '<input type="text" value="' + esc(c.name) + '" data-act="setname" data-id="' + c.id + '" placeholder="Their name"></div>' +
         '<div class="field grid2">' +
           '<div><label class="f">Company</label><input type="text" value="' + esc(c.company) + '" data-act="setco" data-id="' + c.id + '" placeholder="e.g. Bain"></div>' +
           '<div><label class="f">School</label><input type="text" value="' + esc(c.school) + '" data-act="setsc" data-id="' + c.id + '" placeholder="e.g. Harvard"></div>' +
@@ -307,8 +353,10 @@
             (c.locationConfirmed ? "City confirmed " + esc(c.locationConfirmed) : "Mark city confirmed today") +
           "</button></div>" +
         "</div>" +
-        '<div class="field"><label class="f">Notes</label><textarea rows="3" data-act="setnotes" data-id="' + c.id + '" placeholder="Where you met, what you talked about, how you know them, what you would reach out for…">' + esc(c.notes) + "</textarea>" +
-          '<p class="hint" style="margin-top:6px">Worth noting: how you know them, and what you would actually reach out for.</p></div>' +
+        '<div class="field"><label class="f">Notes</label>' +
+          '<textarea id="notes-' + c.id + '" rows="3" data-act="setnotes" data-id="' + c.id +
+          '" placeholder="Where you met, what you talked about \u2014 anything you want.">' + esc(c.notes) + "</textarea>" +
+          noteChipsHTML(c) + "</div>" +
         ((c.phone || c.email) ? '<div class="field" style="display:flex;gap:14px;flex-wrap:wrap">' +
           (c.phone ? '<a class="contactlink" href="tel:' + esc(digits(c.phone)) + '">Call</a>' : "") +
           (c.email ? '<a class="contactlink" href="mailto:' + esc(c.email) + '">Email</a>' : "") +
@@ -377,12 +425,9 @@
         : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
       heading = tierFilter;
     } else {
-      var field = browseBy === "school" ? "school" : browseBy === "role" ? "roles" : "company";
+      var field = browseBy === "school" ? "school" : "company";
       base = groupFilter
-        ? state.contacts.filter(function (c) {
-            if (field === "roles") return (c.roles || []).indexOf(groupFilter) !== -1 || c.roleOther === groupFilter;
-            return (c[field] || "") === groupFilter;
-          })
+        ? state.contacts.filter(function (c) { return (c[field] || "") === groupFilter; })
         : [];
       heading = groupFilter || "";
     }
@@ -403,18 +448,6 @@
       }).join("") + (pending.length
         ? '<button class="filter' + (tierFilter === "Unsorted" ? " on" : "") + '" data-act="filter" data-val="Unsorted">Unsorted<span class="n">' + pending.length + "</span></button>"
         : "");
-    } else if (browseBy === "role") {
-      var rmap = {};
-      state.contacts.forEach(function (c) {
-        (c.roles || []).forEach(function (r) { rmap[r] = (rmap[r] || 0) + 1; });
-        if (c.roleOther) rmap[c.roleOther] = (rmap[c.roleOther] || 0) + 1;
-      });
-      var rkeys = Object.keys(rmap).sort(function (a, b) { return rmap[b] - rmap[a] || a.localeCompare(b); });
-      filtersHTML = rkeys.length
-        ? rkeys.map(function (k) {
-            return '<button class="filter' + (groupFilter === k ? " on" : "") + '" data-act="group" data-val="' + esc(k) + '">' + esc(k) + '<span class="n">' + rmap[k] + "</span></button>";
-          }).join("")
-        : '<span class="note">No roles tagged yet — open anyone and tap Family, Professor, and so on.</span>';
     } else {
       var vals = groupValues(browseBy === "school" ? "school" : "company");
       filtersHTML = vals.length
@@ -429,7 +462,7 @@
       onboardingHTML() +
       (pending.length ? '<div class="card warn rowsplit"><p class="note" style="margin:0">' + pending.length + ' imported contacts are waiting to be sorted.</p><button class="btn-ghost" data-act="gotoadd">Sort them →</button></div>' : "") +
       '<div class="seg" role="group" aria-label="Browse by">' +
-        ["tier", "school", "company", "role"].map(function (b) {
+        ["tier", "school", "company"].map(function (b) {
           return '<button class="' + (browseBy === b ? "on" : "") + '" data-act="browseby" data-val="' + b + '">By ' + b + "</button>";
         }).join("") +
       "</div>" +
@@ -542,8 +575,8 @@
 
     return '<div class="eyebrow">Opportunities</div><h2>Worth reaching out to</h2>' +
       '<p class="sub">People you rated as worth deepening, who you have not logged in a while. ' +
-      'Anyone marked Low potential, or never rated, is left out on purpose. ' +
-      'Close ' + COLD_DAYS.Close + 'd \u00b7 Middle ' + COLD_DAYS.Middle + 'd \u00b7 Networking ' + COLD_DAYS.Networking + 'd.</p>' +
+      'Anyone marked Low potential, or never rated, is left out on purpose \u2014 ' +
+      'and the more potential you gave someone, the sooner they show up.</p>' +
 
       (!rated
         ? '<div class="card"><h3>Nothing rated yet</h3><p class="note">Open anyone and set ' +
@@ -836,7 +869,7 @@
       "</div>" +
 
       '<div class="card"><h3>Import and export</h3>' +
-        '<p class="note">CSV columns read: name, tier, purpose, company, school, location, notes, phone, email. You get a review screen before anything is saved. LinkedIn’s Connections.csv works directly.</p>' +
+        '<p class="note">CSV columns read: name, tier, potential, company, school, location, notes, phone, email. You get a review screen before anything is saved. LinkedIn’s Connections.csv works directly.</p>' +
         '<div class="field"><input type="file" id="fileIn" accept=".csv,.vcf"></div>' +
         '<p class="note" id="importStatus"></p>' +
         '<div class="field"><button class="btn-ghost" data-act="export">Export everything as CSV</button>' +
@@ -1038,15 +1071,18 @@
         c.tier = val; c.pending = false; c.snoozedUntil = "";
         touch(c); commit();
         break;
-      case "setpurpose": c.purpose = c.purpose === val ? "" : val; touch(c); commit(); break;
       case "setpot": c.potential = c.potential === val ? "" : val; touch(c); commit(); break;
-      case "setrole": {
-        var i = c.roles.indexOf(val);
-        if (i === -1) c.roles.push(val); else c.roles.splice(i, 1);
+      case "notechip": {
+        // Swap the trigger word for the chosen label, leaving plain searchable text.
+        var k = el.dataset.k;
+        var re = new RegExp("(^|[^a-z])" + k + "([^a-z]|$)", "i");
+        var cur = c.notes || "";
+        c.notes = re.test(cur)
+          ? cur.replace(re, function (m, a, b) { return a + val + b; })
+          : (cur ? cur.replace(/\s*$/, "") + " " + val : val);
         touch(c); commit();
         break;
       }
-      case "roleother": c.showOther = !c.showOther; if (!c.showOther) { c.roleOther = ""; touch(c); } render(); break;
       case "confirmloc": c.locationConfirmed = today(); touch(c); commit(); toast("City confirmed"); break;
       case "marktouch": case "logtalk": {
         var first = (c.name || "").split(" ")[0];
@@ -1093,7 +1129,6 @@
       }
 
       case "qtier": qDraft.tier = val; syncChips("#qTier", val); break;
-      case "qpurpose": qDraft.purpose = qDraft.purpose === val ? "" : val; syncChips("#qPurpose", qDraft.purpose); break;
       case "qpot": qDraft.potential = qDraft.potential === val ? "" : val; syncChips("#qPot", qDraft.potential); break;
       case "quickadd": quickAdd(); break;
 
@@ -1222,10 +1257,17 @@
     if (!c) return;
     var map = {
       setloc: "location", setnotes: "notes", setco: "company", setsc: "school",
-      setphone: "phone", setemail: "email", setroleother: "roleOther"
+      setphone: "phone", setemail: "email", setname: "name"
     };
     var field = map[el.dataset.act];
-    if (field) { c[field] = el.value; touch(c); commitQuiet(); }
+    if (!field) return;
+    var wasTriggers = field === "notes" ? activeTriggers(c[field]).join(",") : null;
+    c[field] = el.value;
+    touch(c);
+    commitQuiet();
+    // Typing a trigger word has to reveal its chips, but only re-render when the
+    // set actually changes, so ordinary typing never redraws under the cursor.
+    if (field === "notes" && activeTriggers(el.value).join(",") !== wasTriggers) renderListOnly();
   });
 
   document.addEventListener("keydown", function (e) {
@@ -1277,11 +1319,11 @@
     if (!name) { toast("Add a name first"); return; }
     var loc = val("qLoc");
     state.contacts.unshift(blankContact({
-      name: name, tier: qDraft.tier, purpose: qDraft.purpose, potential: qDraft.potential,
+      name: name, tier: qDraft.tier, potential: qDraft.potential,
       company: val("qCo"), school: val("qSc"), location: loc,
       locationConfirmed: loc ? today() : "", notes: val("qNotes"), added: today()
     }));
-    qDraft = { tier: "Middle", purpose: "", potential: "" };
+    qDraft = { tier: "Middle", potential: "" };
     commit();
     toast("Saved " + name);
     var n = document.getElementById("qName");
@@ -1322,14 +1364,12 @@
       return blankContact({
         name: name,
         tier: hasTier ? row.tier : "Acquaintance",
-        purpose: PURPOSES.indexOf(row.purpose) !== -1 ? row.purpose : "",
         company: row.company || row.organization || "",
         school: row.school || "",
         location: row.location || row.city || "",
-        notes: row.notes || row.position || "",
+        notes: [row.notes || row.position || "", row.role || ""].filter(Boolean).join(" "),
         phone: row.phone || row["phone number"] || "",
         email: row["email address"] || row.email || "",
-        roleOther: row.role || "",
         pending: !hasTier,
         added: ""
       });
@@ -1417,12 +1457,12 @@
   }
 
   function exportCSV() {
-    var cols = ["name", "tier", "role", "purpose", "potential", "company", "school",
+    var cols = ["name", "tier", "potential", "company", "school",
                 "location", "locationConfirmed", "lastContact", "notes", "phone", "email"];
     var lines = [cols.join(",")];
     state.contacts.forEach(function (c) {
       lines.push(cols.map(function (k) {
-        var v = k === "role" ? (c.roles || []).concat(c.roleOther ? [c.roleOther] : []).join("; ") : (c[k] == null ? "" : c[k]);
+        var v = c[k] == null ? "" : c[k];
         v = String(v);
         return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
       }).join(","));
