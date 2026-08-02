@@ -28,7 +28,7 @@
   var COLD_DAYS = { Close: 21, Middle: 60 };
   var SNOOZE_DAYS = 10;
 
-  var APP_VERSION = "5.3";
+  var APP_VERSION = "5.4";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -69,7 +69,7 @@
       id: uid(), name: "", tier: "Acquaintance", purpose: "", potential: "",
       company: "", school: "", location: "", locationConfirmed: "",
       notes: "", phone: "", email: "", pending: false, added: "",
-      roles: [], roleOther: "", lastContact: "", touches: 0,
+      roles: [], roleOther: "", lastContact: "", prevContact: "", touches: 0,
       tierSince: "", snoozedUntil: "", updatedAt: nowISO()
     };
     if (over) for (var k in over) if (over.hasOwnProperty(k)) c[k] = over[k];
@@ -90,6 +90,7 @@
       if (c.lastContact === undefined) c.lastContact = "";
       if (typeof c.touches !== "number") c.touches = 0;
       if (c.snoozedUntil === undefined) c.snoozedUntil = "";
+      if (c.prevContact === undefined) c.prevContact = "";
       // Baseline for the reconnect clock when nothing has ever been logged.
       if (!c.tierSince) c.tierSince = c.lastContact || c.added || today();
       delete c.interactions;
@@ -238,19 +239,11 @@
   }
 
   function rowHTML(c) {
-    var mo = monthsSince(c.locationConfirmed);
-    var stale = c.location && mo !== null && mo >= 6;
-    var never = c.location && !c.locationConfirmed;
+    /* Subtitle rule: facts only. No emoji, no "unconfirmed", and never anything
+       about when you last spoke — recency lives in Reconnect, not on every row,
+       because seeing it everywhere is what turns this into a guilt tracker. */
     var sub = [];
-    if (c.location) {
-      sub.push('<span>◍ ' + esc(c.location) +
-        (stale ? ' <span class="stale">· ' + mo + 'mo old</span>' : (never ? ' <span class="stale">· unconfirmed</span>' : "")) + "</span>");
-    }
-    var ci = coldInfo(c);
-    if (ci) {
-      sub.push('<span class="' + (ci.cold ? "stale" : "") + '">✦ talked ' +
-        (ci.days === 0 ? "today" : ci.days === 1 ? "yesterday" : ci.days + "d ago") + "</span>");
-    }
+    if (c.location) sub.push("<span>" + esc(c.location) + "</span>");
     if (c.notes) sub.push('<span style="opacity:.8">' + esc(c.notes.slice(0, 64)) + (c.notes.length > 64 ? "…" : "") + "</span>");
 
     var markedToday = c.lastContact === today();
@@ -320,7 +313,8 @@
             (c.locationConfirmed ? "City confirmed " + esc(c.locationConfirmed) : "Mark city confirmed today") +
           "</button></div>" +
         "</div>" +
-        '<div class="field"><label class="f">Notes</label><textarea rows="2" data-act="setnotes" data-id="' + c.id + '" placeholder="Where you met, what you talked about…">' + esc(c.notes) + "</textarea></div>" +
+        '<div class="field"><label class="f">Notes</label><textarea rows="3" data-act="setnotes" data-id="' + c.id + '" placeholder="Where you met, what you talked about, how you know them, what you would reach out for…">' + esc(c.notes) + "</textarea>" +
+          '<p class="hint" style="margin-top:6px">Worth noting: how you know them, and what you would actually reach out for.</p></div>' +
         ((c.phone || c.email) ? '<div class="field" style="display:flex;gap:14px;flex-wrap:wrap">' +
           (c.phone ? '<a class="contactlink" href="tel:' + esc(digits(c.phone)) + '">Call</a>' : "") +
           (c.email ? '<a class="contactlink" href="mailto:' + esc(c.email) + '">Email</a>' : "") +
@@ -743,9 +737,6 @@
         '<div class="field"><label class="f">Tier</label><div class="chips" id="qTier">' +
           TIERS.map(function (t) { return '<button class="chip' + (qDraft.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="qtier" data-val="' + t + '">' + t + "</button>"; }).join("") +
         "</div></div>" +
-        '<div class="field"><label class="f">Reach out for</label><div class="chips" id="qPurpose">' +
-          PURPOSES.map(function (p) { return '<button class="chip' + (qDraft.purpose === p ? " on" : "") + '" data-p="1" data-act="qpurpose" data-val="' + p + '">' + p + "</button>"; }).join("") +
-        "</div></div>" +
         '<div class="field"><label class="f">Potential to deepen</label><div class="chips" id="qPot">' +
           POTENTIAL.map(function (p) { return '<button class="chip' + (qDraft.potential === p.key ? " on" : "") + '" data-p="1" data-act="qpot" data-val="' + p.key + '" title="' + p.blurb + '">' + p.key + "</button>"; }).join("") +
         "</div></div>" +
@@ -755,7 +746,7 @@
         "</div>" +
         '<div class="field grid2">' +
           '<div><label class="f">City</label><input type="text" id="qLoc" placeholder="Optional" autocomplete="off"></div>' +
-          '<div><label class="f">Where / what</label><input type="text" id="qNotes" placeholder="Met at…" autocomplete="off"></div>' +
+          '<div><label class="f">Where / what</label><input type="text" id="qNotes" placeholder="Where you met, what you talked about" autocomplete="off"></div>' +
         "</div>" +
         '<div class="field"><button class="btn" data-act="quickadd">Save contact</button></div>' +
       "</div>" +
@@ -1008,13 +999,22 @@
       case "roleother": c.showOther = !c.showOther; if (!c.showOther) { c.roleOther = ""; touch(c); } render(); break;
       case "confirmloc": c.locationConfirmed = today(); touch(c); commit(); toast("City confirmed"); break;
       case "marktouch": case "logtalk": {
+        var first = (c.name || "").split(" ")[0];
+        if (c.lastContact === today()) {          // tapped again — undo a misclick
+          c.lastContact = c.prevContact || "";
+          c.touches = Math.max(0, (c.touches || 1) - 1);
+          touch(c); commit();
+          toast("Unmarked " + first);
+          break;
+        }
+        c.prevContact = c.lastContact || "";
         c.lastContact = today();
         c.snoozedUntil = "";
         c.touches = (c.touches || 0) + 1;
         touch(c);
         if (nudgeFor === c.id) nudgeFor = null;
         commit();
-        toast("Marked — talked to " + (c.name || "").split(" ")[0] + " today");
+        toast("Marked " + first + " today");
         break;
       }
       case "nudgesnooze": {

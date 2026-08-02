@@ -350,3 +350,10 @@ input[readonly] { opacity: .85; font-family: ui-monospace, SFMono-Regular, Menlo
   background: linear-gradient(180deg, rgba(12,10,9,0), rgba(12,10,9,.95) 30%);
 }
 .cleanbar .btn-ghost, .cleanbar .btn-danger { margin: 0; flex: 1; }
+
+/* Subtitle is a list of plain facts; keep them visually separated without
+   punctuation or icons cluttering the line. */
+.row-sub { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.row-sub > span + span::before {
+  content: "·"; opacity: .4; margin-right: 8px;
+}
