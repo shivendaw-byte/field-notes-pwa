@@ -93,7 +93,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.2";
+  var APP_VERSION = "9.3";
   var KEY = "field-notes-v4";     // kept: migrates older saves in place
   var BACKUP_NAG_DAYS = 30;
 
@@ -111,10 +111,12 @@
   var nudgeFor = null;   // contact id currently shown in the reminder card
   var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
-  var qDraft = { tier: "Middle", potential: "" };
+  var qDraft = { tier: "Acquaintance", potential: "" };
   var deferredPrompt = null;
   var lastDeleted = null, undoTimer = null;
   var importPreview = null;
+  var lastImport = null;              // { batch, ids } for the undo toast
+  var selectMode = false, selected = {}, lastMove = null;
   var syncBusy = false, syncMsg = "", syncTimer = null;
 
   function uid() {
@@ -571,8 +573,10 @@
     } else if (browseBy === "tier") {
       base = tierFilter === "Unsorted"
         ? pending
-        : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
-      heading = tierFilter;
+        : tierFilter === "Imported"
+          ? justImported()
+          : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
+      heading = tierFilter === "Imported" ? "the last import" : tierFilter;
     } else {
       var field = browseBy === "school" ? "school"
         : browseBy === "city" ? "location" : "company";
@@ -601,6 +605,8 @@
         return '<button class="filter' + (tierFilter === t ? " on" : "") + '" data-act="filter" data-val="' + t + '" title="' + t + '">' + tierLabel(t) + '<span class="n">' + n + "</span></button>";
       }).join("") + (pending.length
         ? '<button class="filter' + (tierFilter === "Unsorted" ? " on" : "") + '" data-act="filter" data-val="Unsorted">Unsorted<span class="n">' + pending.length + "</span></button>"
+        : "") + (justImported().length
+        ? '<button class="filter' + (tierFilter === "Imported" ? " on" : "") + '" data-act="filter" data-val="Imported">Just imported<span class="n">' + justImported().length + "</span></button>"
         : "");
     } else {
       var vals = groupValues(browseBy === "school" ? "school"
@@ -634,8 +640,16 @@
             (searchAll ? " across everyone" : heading ? " in " + esc(heading) : "") + "</p>" +
             '<button class="btn-ghost sm" data-act="toggleall">' + (searchAll ? "Search this tier only" : "Search everyone") + "</button></div>"
         : "") +
-      '<div class="rowlist">' +
-        (list.length ? list.map(rowHTML).join("")
+      (list.length
+        ? '<div class="rowsplit selbar-top"><p class="hint" style="margin:0">' +
+            (selectMode ? Object.keys(selected).length + " selected" : list.length + " here") + "</p>" +
+            '<span style="display:flex;gap:8px">' +
+              (selectMode ? '<button class="btn-ghost sm" data-act="selall" data-ids="' + list.map(function (c) { return c.id; }).join(",") + '">All / none</button>' : "") +
+              '<button class="btn-ghost sm" data-act="selmode">' + (selectMode ? "Cancel" : "Select") + "</button>" +
+            "</span></div>"
+        : "") +
+      '<div class="' + (selectMode ? "loglist" : "rowlist") + '">' +
+        (list.length ? list.map(selectMode ? selRowHTML : rowHTML).join("")
           : '<div class="empty">' +
               (elsewhere
                 ? "Nothing in " + esc(heading) + " matches “" + esc(tierQuery) + "”.<br>" +
@@ -644,7 +658,35 @@
                   ? "Pick a " + browseBy + " above to see who's there."
                   : (tierQuery ? "Nothing here matches “" + esc(tierQuery) + "”." : "No one in " + esc(heading) + " yet.")) +
             "</div>") +
-      "</div>";
+      "</div>" +
+      (selectMode && Object.keys(selected).length
+        ? '<div class="cleanbar movebar"><span class="hint" style="margin:0">Move ' + Object.keys(selected).length + " to</span>" +
+            '<div class="chips">' + TIERS.map(function (t) {
+              return '<button class="chip" data-t="' + t + '" data-act="selmove" data-val="' + t + '">' + tierLabel(t) + "</button>";
+            }).join("") + "</div></div>"
+        : "");
+  }
+
+  /* Contacts from the most recent import that are still sitting in
+     Acquaintance — i.e. the ones you have not promoted yet. */
+  function justImported() {
+    var b = state.settings.lastImport;
+    if (!b) return [];
+    return state.contacts.filter(function (c) {
+      return c.importBatchId === b && c.tier === "Acquaintance" && !c.pending;
+    });
+  }
+
+  function selRowHTML(c) {
+    var on = !!selected[c.id];
+    var meta = [c.tier];
+    if (c.school) meta.push(c.school);
+    if (c.company) meta.push(c.company);
+    return '<div class="logrow clean pick' + (on ? " marked" : "") + '" data-act="selpick" data-id="' + c.id + '">' +
+      '<span class="clbox">' + (on ? "✓" : "") + "</span>" +
+      '<span class="body"><span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+      '<span class="d">' + esc(meta.join(" · ")) + "</span></span>" +
+    "</div>";
   }
 
   /* Rows for the two screens where tracking is allowed to be visible: the Log
@@ -1002,8 +1044,23 @@
     var preTiered = newRows.filter(hadTier).length;
     var needTier = newRows.length - (P.respectFile ? preTiered : 0);
 
+    var keepN = P.respectFile ? preTiered : 0;
     return '<div class="eyebrow">Review before importing</div><h2>' + P.rows.length + ' rows read</h2>' +
-      '<p class="sub">Nothing has been saved yet. Set tiers by group, then confirm.</p>' +
+      '<p class="sub">Nothing has been saved yet.</p>' +
+
+      '<div class="card"><h3>' + newRows.length + " new " + (newRows.length === 1 ? "person" : "people") + "</h3>" +
+        '<p class="note">' +
+          (newRows.length - keepN) + " go to Acquaintance" +
+          (keepN ? " · " + keepN + " keep the tier from the file" : "") +
+          (dupes ? " · " + dupes + " already here, " + (P.dupeMode === "skip" ? "skipped" : "merged") + " (their tier never changes)" : "") +
+          ". Promote anyone later from the list — no sorting now.</p>" +
+        (newRows.length
+          ? '<div class="field"><button class="btn" data-act="pvquick">Add ' + newRows.length + (keepN ? " — " + (newRows.length - keepN) + " as Acquaintance" : " as Acquaintance") + "</button></div>"
+          : "") +
+        '<div class="field"><button class="btn-ghost" data-act="pvcancel">Cancel</button></div>' +
+      "</div>" +
+
+      '<details class="pvmore"><summary>Customize tiers before importing</summary>' +
 
       (preTiered
         ? '<div class="card"><h3>' + preTiered + ' rows already have a tier</h3>' +
@@ -1054,9 +1111,8 @@
           .map(function (t) { return "<strong>" + counts[t] + "</strong> " + t; }).join(" · ") +
         (dupes ? " · <strong>" + dupes + "</strong> duplicate" + (dupes === 1 ? "" : "s") + " " + (P.dupeMode === "skip" ? "skipped" : "updated") : "") +
       "</p>" +
-        '<div class="field"><button class="btn" data-act="pvconfirm">Import ' + newRows.length + " contacts</button></div>" +
-        '<div class="field"><button class="btn-ghost" data-act="pvcancel">Cancel</button></div>' +
-      "</div>";
+        '<div class="field"><button class="btn" data-act="pvconfirm">Import ' + newRows.length + " with these tiers</button></div>" +
+      "</div></details>";
   }
 
   /* ---------- cleanup: bulk triage of contacts that no longer matter ---------- */
@@ -1281,6 +1337,7 @@
         '<div class="field"><button class="btn" data-act="quickadd">Save contact</button></div>' +
       "</div>" +
 
+      (!pending.length && !queueHistory.length ? "" :
       '<div class="card"><h3>Sort imported contacts</h3>' +
         (!pending.length
           ? '<p class="ok">All caught up — nothing waiting.</p>' +
@@ -1308,7 +1365,7 @@
               '<button class="btn-ghost" data-act="queueskip">Skip →</button>' +
             "</div>" +
             '<div class="field"><button class="btn-danger" data-act="queuedelete" data-id="' + cur.id + '">Delete this contact</button></div>') +
-      "</div>" +
+      "</div>") +
 
       /* Cleanup, backup and sync now live in Settings so this tab stays about
          one thing: getting a person into the app. */
@@ -1495,7 +1552,7 @@
      ============================================================ */
   document.addEventListener("click", function (e) {
     var tabBtn = e.target.closest(".tab");
-    if (tabBtn) { tab = tabBtn.dataset.tab; openId = null; importPreview = null; cleanup = null; orderSnapshot = null; render(); return; }
+    if (tabBtn) { tab = tabBtn.dataset.tab; selectMode = false; selected = {}; openId = null; importPreview = null; cleanup = null; orderSnapshot = null; render(); return; }
 
     var el = e.target.closest("[data-act]");
     if (!el) return;
@@ -1510,8 +1567,8 @@
         render();
         break;
       }
-      case "browseby": browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
-      case "filter": tierFilter = val; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
+      case "browseby": selectMode = false; selected = {}; browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
+      case "filter": selectMode = false; selected = {}; tierFilter = val; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
       case "filterclose": tab = "tiering"; browseBy = "tier"; tierFilter = "Close"; render(); break;
       case "group": groupFilter = groupFilter === val ? "" : val; tierQuery = ""; openId = null; orderSnapshot = null; render(); break;
       case "clearsearch": tierQuery = ""; searchAll = false; render(); break;
@@ -1656,7 +1713,28 @@
         render();
         break;
       }
-      case "pvconfirm": applyImport(); break;
+      case "pvconfirm": applyImport(false); break;
+      case "pvquick": applyImport(true); break;
+      case "undoimport": undoImport(); break;
+      case "undomove": undoMove(); break;
+      case "selmode": selectMode = !selectMode; selected = {}; openId = null; render(); break;
+      case "selpick":
+        if (selected[id]) delete selected[id]; else selected[id] = true;
+        render();
+        break;
+      case "selall": {
+        var allNow = el.dataset.ids ? el.dataset.ids.split(",") : [];
+        var every = allNow.every(function (x) { return selected[x]; });
+        selected = {};
+        if (!every) allNow.forEach(function (x) { selected[x] = true; });
+        render();
+        break;
+      }
+      case "selmove": {
+        var sids = Object.keys(selected);
+        if (sids.length) bulkMove(sids, val);
+        break;
+      }
       case "pvcancel": importPreview = null; render(); toast("Import cancelled"); break;
 
       /* sync */
@@ -1814,7 +1892,7 @@
       company: val("qCo"), school: val("qSc"), location: loc,
       locationConfirmed: loc ? today() : "", notes: val("qNotes"), added: today()
     }));
-    qDraft = { tier: "Middle", potential: "" };
+    qDraft = { tier: "Acquaintance", potential: "" };
     commit();
     toast("Saved " + name);
     var n = document.getElementById("qName");
@@ -1912,7 +1990,9 @@
           dupeKeys(c).some(function (k) { if (idx[k]) { hit = idx[k]; return true; } return false; });
           return { c: c, dupe: hit ? hit.id : null };
         }),
-        dupeMode: "skip", defaultTier: "Unsorted", groupBy: "school", groups: {}, respectFile: true
+        /* v9.3: everyone lands in Acquaintance by default. Sorting is something
+           you do later, for the people who matter, not a queue you must clear. */
+        dupeMode: "skip", defaultTier: "Acquaintance", groupBy: "school", groups: {}, respectFile: true
       };
       e.target.value = "";
       render();
@@ -1920,8 +2000,10 @@
     reader.readAsText(f);
   }
 
-  function applyImport() {
+  function applyImport(quick) {
     var P = importPreview, added = 0, updated = 0, skipped = 0;
+    if (quick) { P.defaultTier = "Acquaintance"; P.groups = {}; }
+    var batch = "imp-" + uid(), addedIds = [];
     P.rows.forEach(function (r) {
       if (r.dupe) {
         if (P.dupeMode === "update") {
@@ -1942,14 +2024,74 @@
       var c = r.c;
       if (t === "Unsorted") { c.pending = true; c.tier = "Acquaintance"; }
       else { c.pending = false; c.tier = t; }
+      c.importBatchId = batch;
+      c.importedAt = today();
       touch(c);
       state.contacts.push(c);
+      addedIds.push(c.id);
       added++;
     });
     importPreview = null;
     queueHistory = []; queueIndex = 0;
+    if (added) state.settings.lastImport = batch;
+    lastImport = added ? { batch: batch, ids: addedIds } : null;
     commit();
-    toast("Imported " + added + (updated ? ", updated " + updated : "") + (skipped ? ", skipped " + skipped : ""));
+    toast("Imported " + added + (updated ? ", updated " + updated : "") + (skipped ? ", skipped " + skipped : ""),
+          added ? "Undo" : null, "undoimport");
+  }
+
+  /* Removes exactly the contacts one import added, with tombstones so a sync
+     from another device cannot bring them back. Merged fields on duplicates
+     are left alone: those were your existing people. */
+  function undoImport() {
+    if (!lastImport) { toast("Nothing to undo"); return; }
+    var ids = lastImport.ids;
+    state.contacts = state.contacts.filter(function (c) { return ids.indexOf(c.id) === -1; });
+    ids.forEach(function (id) { state.deleted.push({ id: id, at: nowISO() }); });
+    if (state.settings.lastImport === lastImport.batch) state.settings.lastImport = "";
+    if (tierFilter === "Imported") tierFilter = "Acquaintance";
+    lastImport = null;
+    commit();
+    toast("Import undone — removed " + ids.length);
+  }
+
+  /* Multi-select "Move to". Bulk moves into a tracked tier stagger the clock
+     start forward across two weeks, so a batch of 30 never comes due on the
+     same day. Nobody is ever made due sooner than a single move would. */
+  function bulkMove(ids, to) {
+    var moved = [], n = ids.length;
+    ids.forEach(function (id, i) {
+      var c = byId(id);
+      if (!c || (c.tier === to && !c.pending)) return;
+      moved.push({ id: c.id, tier: c.tier, pending: c.pending, tierSince: c.tierSince,
+                   logLen: (c.tierLog || []).length, snoozedUntil: c.snoozedUntil });
+      if (c.tier !== to) c.tierLog = (c.tierLog || []).concat({ date: today(), from: c.tier, to: to });
+      var offset = (n > 5 && (to === "Close" || to === "Middle")) ? Math.floor(i * 14 / n) : 0;
+      c.tierSince = addDays(today(), offset);
+      c.tier = to; c.pending = false; c.snoozedUntil = "";
+      touch(c);
+    });
+    lastMove = moved.length ? moved : null;
+    selected = {}; selectMode = false;
+    orderSnapshot = null;
+    commit();
+    toast("Moved " + moved.length + " to " + to, moved.length ? "Undo" : null, "undomove");
+  }
+  function undoMove() {
+    if (!lastMove) { toast("Nothing to undo"); return; }
+    lastMove.forEach(function (m) {
+      var c = byId(m.id);
+      if (!c) return;
+      c.tier = m.tier; c.pending = m.pending; c.tierSince = m.tierSince;
+      c.snoozedUntil = m.snoozedUntil;
+      c.tierLog = (c.tierLog || []).slice(0, m.logLen);
+      touch(c);
+    });
+    var n = lastMove.length;
+    lastMove = null;
+    orderSnapshot = null;
+    commit();
+    toast("Moved " + n + " back");
   }
 
   function csvCell(v) {

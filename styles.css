@@ -508,3 +508,19 @@ label.f .n {
 
 /* symbol-mode page heading: the mark alone, no eyebrow, no word */
 .symhead { font-size: 30px; line-height: 1; margin: 2px 0 14px; font-weight: 600; }
+
+/* ---- v9.3: bulk select + import preview ---- */
+/* Selecting is not deleting: green ticks, no strikethrough. */
+.logrow.clean.pick.marked { border-color: rgba(74,222,128,.45); background: rgba(74,222,128,.10); }
+.logrow.clean.pick.marked .t { text-decoration: none; opacity: 1; }
+.logrow.clean.pick.marked .clbox { border-color: rgba(74,222,128,.6); background: rgba(74,222,128,.22); color: #86efac; }
+.selbar-top { margin: -4px 0 10px; }
+.movebar { flex-wrap: wrap; }
+.movebar .chips { flex: 1; margin: 0; }
+.pvmore { margin: 4px 0 16px; }
+.pvmore > summary {
+  cursor: pointer; color: var(--muted); font-size: 14px; padding: 10px 2px; list-style: none;
+}
+.pvmore > summary::before { content: "\25B8  "; }
+.pvmore[open] > summary::before { content: "\25BE  "; }
+.pvmore > summary::-webkit-details-marker { display: none; }
