@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Field Notes tests</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, Menlo, monospace; background: #111; color: #ddd; padding: 16px; }
+  .pass { color: #86efac; } .fail { color: #fca5a5; white-space: pre-wrap; }
+  iframe { width: 375px; height: 700px; border: 1px solid #333; float: right; background: #000; }
+  h1 { font-size: 16px; }
+</style>
+</head>
+<body>
+<h1>Field Notes tests <span id="sum"></span></h1>
+<iframe id="app" title="app under test"></iframe>
+<div id="out"></div>
+<!-- Runs only on a local dev server. Uses fake people and its own storage key
+     (field-notes-TEST), so it cannot touch real contacts. -->
+<script src="fake.js"></script>
+<script src="harness.js"></script>
+<script src="tests.js"></script>
+<script>FNT.run();</script>
+</body>
+</html>

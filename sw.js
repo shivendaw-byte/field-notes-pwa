@@ -1,5 +1,5 @@
 /* Field Notes service worker — offline-first app shell */
-var CACHE = 'field-notes-v22';
+var CACHE = 'field-notes-v23';
 var ASSETS = [
   './', './index.html', './styles.css', './app.js', './data.js',
   './sync.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png',
@@ -9,7 +9,11 @@ var ASSETS = [
 self.addEventListener('install', function (e) {
   e.waitUntil(
     caches.open(CACHE)
-      .then(function (c) { return c.addAll(ASSETS); })
+      // cache:'reload' bypasses the HTTP cache, so a new version never
+      // installs with a stale copy of a file.
+      .then(function (c) {
+        return c.addAll(ASSETS.map(function (u) { return new Request(u, { cache: 'reload' }); }));
+      })
       .then(function () { return self.skipWaiting(); })
   );
 });

@@ -59,9 +59,24 @@
 <script src="sync.js"></script>
 <script src="app.js"></script>
 <script>
-  if ('serviceWorker' in navigator) {
+  // ?fntest=1 is the local test harness; it must not be cached or controlled.
+  if ('serviceWorker' in navigator && !/[?&]fntest=1/.test(location.search)) {
+    // When a new version's service worker takes over, load it straight away
+    // instead of waiting for the next open. Skipped on the very first install.
+    var hadController = !!navigator.serviceWorker.controller, swapped = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (!hadController) { hadController = true; return; }
+      if (swapped) return;
+      swapped = true;
+      if (window.FNUpdate) window.FNUpdate.ready(); else location.reload();
+    });
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function () { /* offline support unavailable */ });
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        // An installed app is resumed, not reloaded, so check on every return.
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'visible') reg.update().catch(function () {});
+        });
+      }).catch(function () { /* offline support unavailable */ });
     });
   }
 </script>

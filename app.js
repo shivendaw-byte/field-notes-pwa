@@ -93,8 +93,14 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.3";
-  var KEY = "field-notes-v4";     // kept: migrates older saves in place
+  var APP_VERSION = "9.4";
+  /* Test mode exists only on a local dev server with ?fntest=1. It uses its
+     own storage key so the test suite can never read or write real contacts. */
+  var TEST = /[?&]fntest=1/.test(location.search) &&
+             /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  var KEY = TEST ? "field-notes-TEST" : "field-notes-v4";   // v4 kept: migrates older saves in place
+  var PREV_KEY = KEY + ".prev";   // one-step rollback copy, written before each update
+  var VER_KEY = KEY + ".ver";     // last app version that ran on this device
   var BACKUP_NAG_DAYS = 30;
 
   /* ============================================================
@@ -964,9 +970,12 @@
 
       '<div class="card"><h3>Backup</h3>' +
         '<p class="note">Your ' + total + ' contacts live in this browser only. Export writes a CSV you can ' +
-        'keep in cloud storage; importing it back restores everything.</p>' +
-        '<div class="field"><button class="btn-ghost" data-act="export">Export everything as CSV</button></div>' +
-        '<div class="field"><input type="file" id="fileIn" accept=".csv,.vcf"></div>' +
+        'keep in cloud storage.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="exportjson">Save a full backup</button></div>' +
+        '<p class="hint">A full backup restores everything exactly: tiers, ratings, history and reconnect clocks.</p>' +
+        '<div class="field"><button class="btn-ghost" data-act="export">Export as CSV (for spreadsheets)</button></div>' +
+        '<div class="field"><label class="f">Import contacts or restore a backup</label>' +
+          '<input type="file" id="fileIn" accept=".csv,.vcf,.json"></div>' +
         '<p class="note" id="importStatus"></p>' +
         '<p class="hint' + (!st.lastExport || age > 30 ? " stale" : "") + '">' +
           (st.lastExport ? "Last export " + esc(st.lastExport) + " (" + age + " days ago)." : "You have never exported a backup.") +
@@ -979,6 +988,10 @@
         '<p class="note">Field Notes v' + APP_VERSION + '</p>' +
         '<p class="hint">Contacts never leave this device unless you turn on sync, and sync uploads only ' +
         'ciphertext. Nothing is sent anywhere else.</p>' +
+        (rollbackInfo()
+          ? '<p class="hint">A copy of your data from before the last update (' + esc(rollbackInfo()) + ') is kept on this device.</p>' +
+            '<div class="field"><button class="btn-ghost sm" data-act="rollback">Go back to that copy</button></div>'
+          : "") +
       "</div>";
   }
 
@@ -1113,68 +1126,6 @@
       "</p>" +
         '<div class="field"><button class="btn" data-act="pvconfirm">Import ' + newRows.length + " with these tiers</button></div>" +
       "</div></details>";
-  }
-
-  /* ---------- cleanup: bulk triage of contacts that no longer matter ---------- */
-  var CLEAN_FILTERS = [
-    { key: "untagged", label: "No school or company",
-      test: function (c) { return !(c.school || "").trim() && !(c.company || "").trim(); } },
-    { key: "acq", label: "Acquaintance only",
-      test: function (c) { return c.tier === "Acquaintance"; } },
-    { key: "nevermarked", label: "Never talked to",
-      test: function (c) { return !c.lastContact; } },
-    { key: "all", label: "Everyone", test: function () { return true; } }
-  ];
-
-  function cleanupCandidates() {
-    var f = CLEAN_FILTERS.filter(function (x) { return x.key === cleanup.filter; })[0] || CLEAN_FILTERS[0];
-    return state.contacts.filter(function (c) { return !c.pending && f.test(c); })
-      .sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
-  }
-
-  function viewCleanup() {
-    var list = cleanupCandidates();
-    var markedIds = Object.keys(cleanup.marked).filter(function (k) { return cleanup.marked[k]; });
-    var shown = searchContacts(list, cleanup.q || "");
-
-    return '<div class="eyebrow">Prune the list</div><h2>Clean up</h2>' +
-      '<p class="sub">Tap anyone you no longer want. Nothing is deleted until you press the button at the bottom, ' +
-      'and you get one undo after that. People with a school or company tag are hidden by default — those are your recent ones.</p>' +
-
-      '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
-        var n = state.contacts.filter(function (c) { return !c.pending && f.test(c); }).length;
-        return '<button class="filter' + (cleanup.filter === f.key ? " on" : "") + '" data-act="clfilter" data-val="' + f.key + '">' +
-          f.label + '<span class="n">' + n + "</span></button>";
-      }).join("") + "</div>" +
-
-      '<div class="searchwrap"><input type="search" id="clSearch" value="' + esc(cleanup.q || "") +
-        '" placeholder="Filter these by name…" autocomplete="off"></div>' +
-
-      '<div class="rowsplit" style="margin-bottom:10px">' +
-        '<p class="hint" style="margin:0">' + shown.length + " shown · " + markedIds.length + " marked</p>" +
-        (markedIds.length ? '<button class="btn-ghost sm" data-act="clnone">Clear marks</button>' : "") +
-      "</div>" +
-
-      '<div class="loglist">' + (shown.length ? shown.map(function (c) {
-        var on = !!cleanup.marked[c.id];
-        var d = daysSince(c.lastContact);
-        var meta = [c.tier];
-        if (c.school) meta.push(c.school);
-        if (c.company) meta.push(c.company);
-        meta.push(c.lastContact ? "talked " + d + "d ago" : "never talked");
-        return '<div class="logrow clean' + (on ? " marked" : "") + '" data-act="clmark" data-id="' + c.id + '">' +
-          '<span class="clbox">' + (on ? "✕" : "") + "</span>" +
-          '<span class="body"><span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
-          '<span class="d">' + esc(meta.join(" · ")) + "</span></span>" +
-        "</div>";
-      }).join("") : '<div class="empty">Nobody matches.</div>') + "</div>" +
-
-      '<div class="cleanbar">' +
-        '<button class="btn-ghost" data-act="clexit">Done</button>' +
-        (markedIds.length
-          ? '<button class="btn-danger" data-act="cldelete">Delete ' + markedIds.length + "</button>"
-          : '<span class="hint" style="margin:0;text-align:center;flex:1">Tap names to mark them</span>') +
-      "</div>";
   }
 
   /* ---------- add / queue ---------- */
@@ -1373,7 +1324,8 @@
         '<p class="note">Importing a CSV, backing up, cleaning out old contacts and device sync all moved ' +
         'to Settings — the gear icon at the top right.</p>' +
         '<div class="field"><button class="btn-ghost" data-act="opensettings">Open Settings →</button></div>' +
-      "</div>";
+      "</div>" +
+      '<p class="hint" style="text-align:center">Field Notes v' + APP_VERSION + "</p>";
   }
 
   function syncCardHTML() {
@@ -1811,6 +1763,9 @@
         break;
       }
       case "export": exportCSV(); break;
+      case "exportjson": exportJSON(); break;
+      case "rollback": rollbackData(); break;
+      case "reloadapp": location.reload(); break;
     }
   });
 
@@ -1933,6 +1888,8 @@
       return blankContact({
         name: name,
         tier: hasTier ? row.tier : "Acquaintance",
+        potential: potLevel(row.potential) ? row.potential : "",
+        locationConfirmed: row.locationconfirmed || "",
         company: row.company || row.organization || "",
         school: row.school || "",
         location: row.location || row.city || "",
@@ -1974,6 +1931,11 @@
     var reader = new FileReader();
     reader.onload = function (ev) {
       var text = String(ev.target.result || "");
+      if (/\.json$/i.test(f.name) || /^\s*\{/.test(text.slice(0, 50))) {
+        e.target.value = "";
+        restoreJSON(text, status);
+        return;
+      }
       var rows;
       try {
         rows = /\.vcf$/i.test(f.name) || /BEGIN:VCARD/i.test(text.slice(0, 200))
@@ -2094,15 +2056,82 @@
     toast("Moved " + n + " back");
   }
 
+  /* ---------- full backup: lossless, unlike the CSV ---------- */
+  function backupString() {
+    return JSON.stringify({ app: "field-notes", appVersion: APP_VERSION, exportedAt: nowISO(), state: state });
+  }
+  function exportJSON() {
+    state.settings.lastExport = today();
+    var blob = new Blob([backupString()], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "field-notes-backup-" + today() + ".json";
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    commit();
+    toast("Backup saved \u2014 " + state.contacts.length + " contacts");
+  }
+  /* Returns the parsed state, or null if the text is not a Field Notes backup. */
+  function parseBackup(text) {
+    try {
+      var j = JSON.parse(text);
+      var s = j && j.app === "field-notes" ? j.state : j;
+      if (!s || !Array.isArray(s.contacts)) return null;
+      return s;
+    } catch (err) { return null; }
+  }
+  function restoreJSON(text, status) {
+    var s = parseBackup(text);
+    if (!s) { if (status) status.textContent = "That file is not a Field Notes backup."; return; }
+    if (!confirm("Restore " + s.contacts.length + " contacts from this backup?\n\n" +
+                 "It replaces the " + state.contacts.length + " on this device. " +
+                 "What you have now is kept as a rollback copy (Settings, About).")) return;
+    keepRollback(JSON.stringify(state));
+    applyRestored(s);
+    toast("Restored " + state.contacts.length + " contacts");
+  }
+  function applyRestored(s) {
+    state = migrate(s);
+    orderSnapshot = null; openId = null; nudgeFor = null;
+    save(); render(); scheduleSync();
+  }
+
+  /* ---------- one-step rollback copy ---------- */
+  function keepRollback(raw) {
+    try { localStorage.setItem(PREV_KEY, JSON.stringify({ at: nowISO(), from: lastRanVersion() || "", raw: raw })); return true; }
+    catch (e) { return false; }   // storage full: the update still proceeds
+  }
+  function readRollback() {
+    try { return JSON.parse(localStorage.getItem(PREV_KEY) || "null"); } catch (e) { return null; }
+  }
+  function rollbackInfo() {
+    var r = readRollback();
+    return r && r.raw ? String(r.at).slice(0, 10) + (r.from ? ", v" + r.from : "") : "";
+  }
+  function rollbackData() {
+    var r = readRollback();
+    var s = r && parseBackup(r.raw);
+    if (!s) { toast("No earlier copy on this device"); return; }
+    if (!confirm("Go back to the copy from " + String(r.at).slice(0, 10) + " (" + s.contacts.length +
+                 " contacts)? Changes made since then are replaced. You can undo this once from the same button.")) return;
+    var current = JSON.stringify(state);
+    applyRestored(s);
+    keepRollback(current);
+    toast("Went back to the earlier copy");
+  }
+  function lastRanVersion() {
+    try { return localStorage.getItem(VER_KEY) || ""; } catch (e) { return ""; }
+  }
+
   function csvCell(v) {
     v = String(v == null ? "" : v);
     return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   }
 
-  function exportCSV() {
-    /* interactions and tierLog are packed into single cells so a plain CSV
-       round-trips the full history. Without these a backup silently loses
-       every date you ever logged. */
+  /* interactions and tierLog are packed into single cells so a plain CSV
+     round-trips the full history. Without these a backup silently loses
+     every date you ever logged. */
+  function csvString() {
     var cols = ["name", "tier", "potential", "company", "school",
                 "location", "locationConfirmed", "lastContact", "notes", "phone", "email",
                 "interactions", "tierchanges"];
@@ -2120,7 +2149,11 @@
         return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
       }).join(","));
     });
-    var blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    return lines.join("\n");
+  }
+
+  function exportCSV() {
+    var blob = new Blob(["﻿" + csvString()], { type: "text/csv;charset=utf-8" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "field-notes-" + today() + ".csv";
@@ -2153,10 +2186,33 @@
   /* ============================================================
      Boot
      ============================================================ */
+  /* Before a new version touches stored data, keep the untouched copy. If a
+     migration ever goes wrong, Settings > About can put it back. */
+  var ranBefore = lastRanVersion(), rawBefore = null;
+  try { rawBefore = localStorage.getItem(KEY); } catch (e) {}
+  var isUpdate = !!rawBefore && ranBefore !== APP_VERSION;
+  if (isUpdate) keepRollback(rawBefore);
+
   state = load();
   save();
+  try { localStorage.setItem(VER_KEY, APP_VERSION); } catch (e) {}
   var firstNudge = nudgeCandidate();
   nudgeFor = firstNudge ? firstNudge.id : null;
   render();
+  if (isUpdate && state.contacts.length) toast("Updated to v" + APP_VERSION);
+
+  /* Called by index.html when a new service worker takes control. Reload at
+     once unless you are mid-typing, in which case offer it instead. */
+  window.FNUpdate = {
+    ready: function () {
+      var a = document.activeElement;
+      var typing = a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== "file" && a.value;
+      if (typing) toast("New version ready", "Reload", "reloadapp");
+      else location.reload();
+    }
+  };
+
+  if (TEST) window.__FN = { eval: function (code) { return eval(code); } };
+
   if (window.FNSync && FNSync.enabled()) doSync(true);
 })();
