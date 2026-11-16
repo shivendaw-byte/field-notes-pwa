@@ -524,3 +524,18 @@ label.f .n {
 .pvmore > summary::before { content: "\25B8  "; }
 .pvmore[open] > summary::before { content: "\25BE  "; }
 .pvmore > summary::-webkit-details-marker { display: none; }
+
+/* ---- v9.5: capture ---- */
+.capture #qLine { font-size: 17px; padding: 14px 12px; }
+details.more { margin-top: 12px; }
+details.more > summary {
+  cursor: pointer; color: var(--muted); font-size: 14px; padding: 10px 2px; list-style: none; min-height: var(--tap);
+  display: flex; align-items: center;
+}
+details.more > summary::before { content: "\25B8"; margin-right: 8px; }
+details.more[open] > summary::before { content: "\25BE"; }
+details.more > summary::-webkit-details-marker { display: none; }
+.justadded { border-color: rgba(74,222,128,.35); }
+.justadded h3 .n { font-weight: 400; color: var(--dim); font-size: 13px; margin-left: 6px; }
+.showmore { width: 100%; margin-top: 10px; }
+.capture .btn { width: 100%; }

@@ -93,7 +93,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.4";
+  var APP_VERSION = "9.5";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -118,6 +118,11 @@
   var cleanup = null;    // { filter, marked:{id:true} } when the purge screen is open
   var queueIndex = 0, queueHistory = [];
   var qDraft = { tier: "Acquaintance", potential: "" };
+  var qOpen = false;          // "More details" on the Add tab
+  var lastAdded = null;       // id of the person just captured, for the follow-up card
+  var dupeOk = "";            // name the user confirmed adding twice
+  var LIST_STEP = 150;
+  var listLimit = LIST_STEP;  // long lists draw this many rows until asked for more
   var deferredPrompt = null;
   var lastDeleted = null, undoTimer = null;
   var importPreview = null;
@@ -407,6 +412,7 @@
       : ago === 0 ? "Last spoke today."
       : ago === 1 ? "Last spoke yesterday."
       : "Last spoke " + ago + " days ago, on " + last + ".";
+    if (c.added) line += " Added " + c.added + ".";
     return '<div class="field"><label class="f">Last interaction</label>' +
       '<p class="hint" style="margin:0 0 8px">' + esc(line) + "</p>" +
       '<button class="btn-ghost sm" data-act="logpast" data-id="' + c.id + '">Log a past date</button></div>';
@@ -442,6 +448,9 @@
         "</span>" +
         '<span class="caret" aria-hidden="true">▾</span>' +
       "</button>" +
+      /* Only the open row carries its form. Drawing fifteen inputs for each of
+         900 collapsed rows made every tap rebuild megabytes of HTML. */
+      (openId !== c.id ? "" :
       '<div class="row-body">' +
         '<div class="field"><label class="f">Tier — tap to move</label><div class="chips">' +
           TIERS.map(function (t) {
@@ -479,7 +488,7 @@
         "</div>" : "") +
         historyHTML(c) +
         '<div class="field"><button class="btn-danger" data-act="delete" data-id="' + c.id + '">Delete contact</button></div>' +
-      "</div></div>";
+      "</div>") + "</div>";
   }
 
   /* ============================================================
@@ -604,6 +613,15 @@
 
     var stale = orderIsStale(base);
 
+    // Draw the first screens' worth; the open row always stays visible.
+    var total = list.length, capped = false;
+    if (!selectMode && total > listLimit) {
+      var openAt = -1;
+      for (var oi = 0; oi < total; oi++) if (list[oi].id === openId) { openAt = oi; break; }
+      if (openAt < listLimit) { capped = true; }
+    }
+    var drawn = capped ? list.slice(0, listLimit) : list;
+
     var filtersHTML;
     if (browseBy === "tier") {
       filtersHTML = TIERS.map(function (t) {
@@ -655,7 +673,9 @@
             "</span></div>"
         : "") +
       '<div class="' + (selectMode ? "loglist" : "rowlist") + '">' +
-        (list.length ? list.map(selectMode ? selRowHTML : rowHTML).join("")
+        (list.length ? drawn.map(selectMode ? selRowHTML : rowHTML).join("") +
+            (capped ? '<button class="btn-ghost showmore" data-act="showmore">Show ' + Math.min(LIST_STEP, total - listLimit) +
+              " more (" + (total - listLimit) + " not shown)</button>" : "")
           : '<div class="empty">' +
               (elsewhere
                 ? "Nothing in " + esc(heading) + " matches “" + esc(tierQuery) + "”.<br>" +
@@ -793,6 +813,7 @@
     var results = logQuery.trim()
       ? searchContacts(active, logQuery).filter(function (c) { return c.lastContact !== t; }).slice(0, 15)
       : [];
+    var quick = logQuery.trim() ? [] : quickLogList(active, t);
 
     return pageHead("log", "Today", "Daily log") +
       subLine("Log whoever you had a real conversation with.") +
@@ -809,6 +830,11 @@
             : '<div class="empty">Nobody matches \u201c' + esc(logQuery) + '\u201d.</div>')
         : "") +
 
+      (quick.length
+        ? '<h3 class="logsec">People you talk to most</h3>' +
+          '<div class="loglist">' + quick.map(function (c) { return logRowHTML(c, "log"); }).join("") + "</div>"
+        : "") +
+
       (loggedToday.length
         ? '<h3 class="logsec">Logged today <span class="n">' + loggedToday.length + "</span></h3>" +
           '<div class="loglist">' + loggedToday.map(function (c) { return logRowHTML(c, "undo"); }).join("") + "</div>"
@@ -816,6 +842,20 @@
             '<div class="card"><h3>Nothing logged yet today</h3>' +
             '<p class="note">Search a name above and tap Log. Skipping days costs you nothing \u2014 ' +
             'an empty day just means nothing worth recording happened.</p></div>'));
+  }
+
+  /* The handful of people most likely to be logged, so the common case needs
+     no typing: recent conversations count most, then Close, then Middle.
+     People already logged today drop out. */
+  function quickLogList(active, t) {
+    var cut = addDays(t, -90);
+    return active.map(function (c) {
+      var recent = (c.interactions || []).filter(function (d) { return d >= cut; }).length;
+      var score = recent * 2 + (c.tier === "Close" ? 3 : c.tier === "Middle" ? 1 : 0);
+      return { c: c, score: score };
+    }).filter(function (x) { return x.score > 0 && x.c.lastContact !== t; })
+      .sort(function (a, b) { return b.score - a.score || (a.c.name || "").localeCompare(b.c.name || ""); })
+      .slice(0, 8).map(function (x) { return x.c; });
   }
 
   /* Reconnect is framed as opportunity, not debt: it only ever lists people you
@@ -1266,27 +1306,32 @@
     if (queueIndex >= pending.length) queueIndex = Math.max(0, pending.length - 1);
     var cur = pending[queueIndex];
 
-    return pageHead("add", "Tonight\'s log", "Add") +
-      subLine("Who did you meet? A name and a tier is enough. Potential and notes take five more seconds and are worth it while it is fresh.") +
+    return pageHead("add", "New person", "Add") +
+      subLine("Type a name and press Enter. That is a complete entry.") +
       backupNagHTML() +
-      '<div class="card"><h3>Just met someone</h3>' +
-        '<input type="text" id="qName" placeholder="Name" autocomplete="off" enterkeyhint="done">' +
-        '<div class="field"><label class="f">Tier</label><div class="chips" id="qTier">' +
-          TIERS.map(function (t) { return '<button class="chip' + (qDraft.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="qtier" data-val="' + t + '">' + t + "</button>"; }).join("") +
-        "</div></div>" +
-        '<div class="field"><label class="f">Potential to deepen</label><div class="chips" id="qPot">' +
-          POTENTIAL.map(function (p) { return '<button class="chip' + (qDraft.potential === p.key ? " on" : "") + '" data-p="1" data-act="qpot" data-val="' + p.key + '" title="' + p.blurb + '">' + p.key + "</button>"; }).join("") +
-        "</div></div>" +
-        '<div class="field grid2">' +
-          '<div><label class="f">Company</label><input type="text" id="qCo" placeholder="Optional" autocomplete="off"></div>' +
-          '<div><label class="f">School</label><input type="text" id="qSc" placeholder="Optional" autocomplete="off"></div>' +
-        "</div>" +
-        '<div class="field grid2">' +
-          '<div><label class="f">City</label><input type="text" id="qLoc" placeholder="Optional" autocomplete="off"></div>' +
-          '<div><label class="f">Where / what</label><input type="text" id="qNotes" placeholder="Where you met, what you talked about" autocomplete="off"></div>' +
-        "</div>" +
-        '<div class="field"><button class="btn" data-act="quickadd">Save contact</button></div>' +
+      '<div class="card capture"><h3>Just met someone</h3>' +
+        '<input type="text" id="qLine" placeholder="Sam Lee at Geography Club" autocomplete="off" ' +
+          'autocapitalize="words" enterkeyhint="done" aria-label="Name, and where you met">' +
+        '<p class="hint" style="margin:8px 0 0">Name, then where you met if you like. Enter saves. Nothing else is needed.</p>' +
+        '<div class="field"><button class="btn" data-act="quickadd">Save</button></div>' +
+        '<details class="more"' + (qOpen ? " open" : "") + ' id="qMore"><summary>More details</summary>' +
+          '<div class="field"><label class="f">Tier</label><div class="chips" id="qTier">' +
+            TIERS.map(function (t) { return '<button class="chip' + (qDraft.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="qtier" data-val="' + t + '">' + t + "</button>"; }).join("") +
+          "</div></div>" +
+          '<div class="field"><label class="f">Potential to deepen</label><div class="chips" id="qPot">' +
+            POTENTIAL.map(function (p) { return '<button class="chip' + (qDraft.potential === p.key ? " on" : "") + '" data-p="1" data-act="qpot" data-val="' + p.key + '" title="' + p.blurb + '">' + p.key + "</button>"; }).join("") +
+          "</div></div>" +
+          '<div class="field grid2">' +
+            '<div><label class="f">Company</label><input type="text" id="qCo" placeholder="Optional" autocomplete="off"></div>' +
+            '<div><label class="f">School</label><input type="text" id="qSc" placeholder="Optional" autocomplete="off"></div>' +
+          "</div>" +
+          '<div class="field grid2">' +
+            '<div><label class="f">City</label><input type="text" id="qLoc" placeholder="Optional" autocomplete="off"></div>' +
+            '<div><label class="f">Notes</label><input type="text" id="qNotes" placeholder="Optional" autocomplete="off"></div>' +
+          "</div>" +
+        "</details>" +
       "</div>" +
+      justAddedHTML() +
 
       (!pending.length && !queueHistory.length ? "" :
       '<div class="card"><h3>Sort imported contacts</h3>' +
@@ -1318,13 +1363,9 @@
             '<div class="field"><button class="btn-danger" data-act="queuedelete" data-id="' + cur.id + '">Delete this contact</button></div>') +
       "</div>") +
 
-      /* Cleanup, backup and sync now live in Settings so this tab stays about
-         one thing: getting a person into the app. */
-      '<div class="card"><h3>Bringing people in</h3>' +
-        '<p class="note">Importing a CSV, backing up, cleaning out old contacts and device sync all moved ' +
-        'to Settings — the gear icon at the top right.</p>' +
-        '<div class="field"><button class="btn-ghost" data-act="opensettings">Open Settings →</button></div>' +
-      "</div>" +
+      /* Import, backup and sync live in Settings so this tab stays about one
+         thing: getting a person into the app. */
+      '<div class="field"><button class="btn-ghost" data-act="opensettings">Import a file, back up or sync →</button></div>' +
       '<p class="hint" style="text-align:center">Field Notes v' + APP_VERSION + "</p>";
   }
 
@@ -1441,7 +1482,8 @@
     if (!host) return;
     var c = nudgeFor ? byId(nudgeFor) : null;
     var i = c ? coldInfo(c) : null;
-    if (!c || !i || !i.cold) { host.hidden = true; host.innerHTML = ""; return; }
+    // Never over the Add tab: it would sit on top of what you are typing.
+    if (!c || !i || !i.cold || tab === "add" || importPreview || cleanup) { host.hidden = true; host.innerHTML = ""; return; }
     host.hidden = false;
     host.innerHTML =
       '<div class="nudge-body">' +
@@ -1504,7 +1546,13 @@
      ============================================================ */
   document.addEventListener("click", function (e) {
     var tabBtn = e.target.closest(".tab");
-    if (tabBtn) { tab = tabBtn.dataset.tab; selectMode = false; selected = {}; openId = null; importPreview = null; cleanup = null; orderSnapshot = null; render(); return; }
+    if (tabBtn) {
+      tab = tabBtn.dataset.tab; selectMode = false; selected = {}; openId = null;
+      importPreview = null; cleanup = null; orderSnapshot = null; listLimit = LIST_STEP;
+      render();
+      focusCapture();
+      return;
+    }
 
     var el = e.target.closest("[data-act]");
     if (!el) return;
@@ -1519,8 +1567,9 @@
         render();
         break;
       }
-      case "browseby": selectMode = false; selected = {}; browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
-      case "filter": selectMode = false; selected = {}; tierFilter = val; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
+      case "browseby": listLimit = LIST_STEP; selectMode = false; selected = {}; browseBy = val; groupFilter = ""; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
+      case "showmore": listLimit += LIST_STEP; render(); break;
+      case "filter": listLimit = LIST_STEP; selectMode = false; selected = {}; tierFilter = val; tierQuery = ""; searchAll = false; openId = null; orderSnapshot = null; render(); break;
       case "filterclose": tab = "tiering"; browseBy = "tier"; tierFilter = "Close"; render(); break;
       case "group": groupFilter = groupFilter === val ? "" : val; tierQuery = ""; openId = null; orderSnapshot = null; render(); break;
       case "clearsearch": tierQuery = ""; searchAll = false; render(); break;
@@ -1620,6 +1669,8 @@
       case "qtier": qDraft.tier = val; syncChips("#qTier", val); break;
       case "qpot": qDraft.potential = qDraft.potential === val ? "" : val; syncChips("#qPot", qDraft.potential); break;
       case "quickadd": quickAdd(); break;
+      case "addanyway": dupeOk = val; quickAdd(val); break;
+      case "dismissadded": lastAdded = null; render(); break;
 
       case "queuetier": {
         var p = state.contacts.filter(function (x) { return x.pending; });
@@ -1795,7 +1846,7 @@
   });
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && e.target.id === "qName") { e.preventDefault(); quickAdd(); }
+    if (e.key === "Enter" && e.target.id === "qLine") { e.preventDefault(); quickAdd(); }
   });
 
   function val(id) {
@@ -1838,20 +1889,91 @@
     toast("Restored " + (d.contact.name || "contact"));
   }
 
-  function quickAdd() {
-    var name = val("qName");
-    if (!name) { toast("Add a name first"); return; }
+  /* "Sam Lee at Geography Club" -> name "Sam Lee", context "Met at Geography Club".
+     The first " at ", " from ", " in ", " via ", "@", dash, comma or #tag ends
+     the name. Anything it cannot split is treated as just a name. */
+  function parseCapture(text) {
+    var t = String(text || "").replace(/\s+/g, " ").trim().replace(/^(just\s+)?met\s+/i, "");
+    if (!t) return { name: "", context: "" };
+    var m = /^(.+?)(\s+(?:at|from|in|via)\s+|\s+@\s*|\s+[-\u2013\u2014]\s+|\s*,\s+|\s+(?=#))(.+)$/i.exec(t);
+    var name = m ? m[1].trim() : t, context = "";
+    if (m) {
+      var sep = m[2].trim().toLowerCase(), rest = m[3].trim();
+      context = /^(at|from|in|via)$/.test(sep) ? "Met " + sep + " " + rest
+              : sep === "@" ? "Met at " + rest
+              : rest;
+    }
+    // A phone keyboard often leaves a name in lower case.
+    if (name === name.toLowerCase()) {
+      name = name.replace(/(^|[\s-])([a-z])/g, function (x, a, b) { return a + b.toUpperCase(); });
+    }
+    return { name: name, context: context };
+  }
+
+  function focusCapture() {
+    if (tab !== "add" || importPreview || cleanup) return;
+    var el = document.getElementById("qLine");
+    if (el) el.focus();
+  }
+
+  function quickAdd(lineOverride) {
+    var line = lineOverride || val("qLine");
+    var p = parseCapture(line);
+    if (!p.name) { toast("Type a name first"); focusCapture(); return; }
+
+    // Same name already here: say so once instead of silently doubling up.
+    var key = normName(p.name);
+    if (dupeOk !== line) {
+      var twin = null;
+      for (var i = 0; i < state.contacts.length; i++) {
+        if (normName(state.contacts[i].name) === key) { twin = state.contacts[i]; break; }
+      }
+      if (twin) {
+        toast(twin.name + " is already here (" + twin.tier + ")", "Add anyway", "addanyway");
+        var btn = document.querySelector("#toast .toast-act");
+        if (btn) btn.dataset.val = line;
+        return;
+      }
+    }
+    dupeOk = "";
+
+    var more = document.getElementById("qMore");
+    qOpen = !!(more && more.open);
     var loc = val("qLoc");
-    state.contacts.unshift(blankContact({
-      name: name, tier: qDraft.tier, potential: qDraft.potential,
+    var c = blankContact({
+      name: p.name, tier: qDraft.tier, potential: qDraft.potential,
       company: val("qCo"), school: val("qSc"), location: loc,
-      locationConfirmed: loc ? today() : "", notes: val("qNotes"), added: today()
-    }));
+      locationConfirmed: loc ? today() : "",
+      notes: [p.context, val("qNotes")].filter(Boolean).join(". "),
+      added: today(), tierSince: today()
+    });
+    state.contacts.unshift(c);
+    lastAdded = c.id;
     qDraft = { tier: "Acquaintance", potential: "" };
     commit();
-    toast("Saved " + name);
-    var n = document.getElementById("qName");
-    if (n) n.focus();
+    toast("Added " + p.name);
+    focusCapture();
+  }
+
+  /* After a capture, the two judgements worth making while it is fresh are one
+     tap each, right under the box. Ignoring the card is a complete answer. */
+  function justAddedHTML() {
+    var c = lastAdded ? byId(lastAdded) : null;
+    if (!c) return "";
+    return '<div class="card justadded">' +
+      '<div class="rowsplit"><h3 style="margin:0">' + esc(c.name) + ' <span class="n">added</span></h3>' +
+        '<button class="btn-ghost sm" data-act="dismissadded">Done</button></div>' +
+      (c.notes ? '<p class="note">' + esc(c.notes) + "</p>" : "") +
+      '<div class="field"><label class="f">Tier</label><div class="chips">' +
+        TIERS.map(function (t) {
+          return '<button class="chip' + (c.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="settier" data-id="' + c.id + '" data-val="' + t + '">' + tierLabel(t) + "</button>";
+        }).join("") + "</div></div>" +
+      '<div class="field"><label class="f">Potential to deepen</label><div class="chips">' +
+        POTENTIAL.map(function (x) {
+          return '<button class="chip' + (c.potential === x.key ? " on" : "") + '" data-p="1" data-act="setpot" data-id="' + c.id + '" data-val="' + x.key + '" title="' + x.blurb + '">' + x.key + "</button>";
+        }).join("") + "</div></div>" +
+      '<div class="field"><button class="btn-ghost sm" data-act="delete" data-id="' + c.id + '">Remove ' + esc(c.name.split(" ")[0]) + "</button></div>" +
+    "</div>";
   }
 
   /* ============================================================
@@ -2198,7 +2320,31 @@
   try { localStorage.setItem(VER_KEY, APP_VERSION); } catch (e) {}
   var firstNudge = nudgeCandidate();
   nudgeFor = firstNudge ? firstNudge.id : null;
+
+  /* Home-screen shortcuts and links: ?tab=add|log|reach, and ?add=Sam+Lee+at+X
+     to open Add with the line filled in. The address is cleaned afterwards so a
+     refresh does not repeat it. */
+  var prefill = "";
+  try {
+    var qs = new URLSearchParams(location.search);
+    var wantTab = qs.get("tab");
+    prefill = qs.get("add") || "";
+    if (prefill) wantTab = "add";
+    if (wantTab === "reach") wantTab = "reconnect";
+    if (wantTab === "add" || wantTab === "log" || wantTab === "reconnect") tab = wantTab;
+    if ((qs.has("tab") || qs.has("add")) && history.replaceState) {
+      qs.delete("tab"); qs.delete("add");
+      var rest = qs.toString();
+      history.replaceState(null, "", location.pathname + (rest ? "?" + rest : ""));
+    }
+  } catch (e) {}
+  if (tab === "add") nudgeFor = null;   // you came to capture; the reminder can wait
+
   render();
+  if (tab === "add") {
+    var ql = document.getElementById("qLine");
+    if (ql) { ql.value = prefill; ql.focus(); }
+  }
   if (isUpdate && state.contacts.length) toast("Updated to v" + APP_VERSION);
 
   /* Called by index.html when a new service worker takes control. Reload at

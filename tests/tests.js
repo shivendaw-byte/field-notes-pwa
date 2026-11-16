@@ -169,6 +169,168 @@
     assert(T.text().indexOf("Field Notes v" + ev("APP_VERSION")) !== -1);
   });
 
+  /* ================= capture (v9.5) ================= */
+
+  test("parseCapture: splits a name from where you met", async function () {
+    await boot(null);
+    var cases = [
+      ["Sam Lee at Geography Club", "Sam Lee", "Met at Geography Club"],
+      ["met Sam Lee at the GBM, loves maps", "Sam Lee", "Met at the GBM, loves maps"],
+      ["Sam Lee", "Sam Lee", ""],
+      ["sam lee", "Sam Lee", ""],
+      ["Kat in MATH 1400", "Kat", "Met in MATH 1400"],
+      ["Jo from my hall", "Jo", "Met from my hall"],
+      ["Priya @ Class Board", "Priya", "Met at Class Board"],
+      ["Dana, roommate's friend", "Dana", "roommate's friend"],
+      ["Lee - NSO group", "Lee", "NSO group"],
+      ["Avery Stone #geoclub", "Avery Stone", "#geoclub"],
+      ["Mary-Kate O'Neil at Hillel", "Mary-Kate O'Neil", "Met at Hillel"],
+      ["  ", "", ""],
+      ["Sam at", "Sam at", ""]
+    ];
+    cases.forEach(function (c) {
+      var p = ev("parseCapture(" + JSON.stringify(c[0]) + ")");
+      eq([p.name, p.context], [c[1], c[2]], "parse of '" + c[0] + "'");
+    });
+  });
+
+  test("capture: one line and Enter is a complete entry; box stays ready for the next person", async function () {
+    await boot(FNFake.makeState(50, 8), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    eq(T.app().document.activeElement.id, "qLine", "name box should be focused when Add opens");
+    T.type("#qLine", "Sam Lee at Geography Club");
+    T.key("#qLine", "Enter");
+    var c = ev("state.contacts[0]");
+    eq([c.name, c.notes, c.tier, c.pending, c.added, c.tierSince], ["Sam Lee", "Met at Geography Club", "Acquaintance", false, ev("today()"), ev("today()")]);
+    eq(ev("state.contacts.length"), 51);
+    eq(T.$("#qLine").value, "");
+    eq(T.app().document.activeElement.id, "qLine", "focus should return to the box");
+    // second person straight away, name only
+    T.type("#qLine", "jo park");
+    T.key("#qLine", "Enter");
+    eq(ev("state.contacts[0].name"), "Jo Park");
+    eq(ev("state.contacts.length"), 52);
+  });
+
+  test("capture: the follow-up card sets tier and potential in one tap each, and can remove", async function () {
+    await boot(FNFake.makeState(5, 8), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.type("#qLine", "Robin Vale, hall");
+    T.click('[data-act="quickadd"]');
+    assert(T.$(".justadded"), "no follow-up card");
+    T.click('.justadded [data-act="settier"][data-val="Middle"]');
+    T.click('.justadded [data-act="setpot"][data-val="Strong"]');
+    var c = ev("state.contacts[0]");
+    eq([c.tier, c.potential, c.notes], ["Middle", "Strong", "hall"]);
+    T.click('.justadded [data-act="delete"]');
+    eq(ev("state.contacts.length"), 5);
+    T.click('[data-act="undodelete"]');
+    eq(ev("state.contacts.length"), 6);
+  });
+
+  test("capture: a name already in the app is flagged once, then 'Add anyway' works", async function () {
+    var s = FNFake.makeState(3, 8); s.contacts[0].name = "Sam Lee"; s.contacts[0].tier = "Close";
+    await boot(s, { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.type("#qLine", "sam lee at the gym");
+    T.key("#qLine", "Enter");
+    eq(ev("state.contacts.length"), 3, "duplicate was added without asking");
+    assert(/already here \(Close\)/.test(T.$("#toast").innerText), "no duplicate notice");
+    T.click('#toast [data-act="addanyway"]');
+    eq(ev("state.contacts.length"), 4);
+    eq(ev("state.contacts[0].notes"), "Met at the gym");
+  });
+
+  test("capture: optional details are used when filled in", async function () {
+    await boot(FNFake.makeState(2, 8), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.$("#qMore").open = true;
+    T.click('#qTier [data-val="Close"]');
+    T.click('#qPot [data-val="Rare"]');
+    T.$("#qCo").value = "Acme"; T.$("#qSc").value = "Penn"; T.$("#qLoc").value = "Boston"; T.$("#qNotes").value = "plays squash";
+    T.type("#qLine", "Dev Marsh at orientation");
+    T.click('[data-act="quickadd"]');
+    var c = ev("state.contacts[0]");
+    eq([c.name, c.tier, c.potential, c.company, c.school, c.location, c.notes],
+       ["Dev Marsh", "Close", "Rare", "Acme", "Penn", "Boston", "Met at orientation. plays squash"]);
+  });
+
+  test("capture: the reminder card never covers the Add tab", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 5)[0], { tier: "Close", potential: "Rare", interactions: [], lastContact: "", tierSince: "2026-01-01" }));
+    await boot(s, { ver: "x" });
+    assert(!T.$("#nudge").hidden, "expected a reminder card on open");
+    T.click('.tab[data-tab="add"]');
+    assert(T.$("#nudge").hidden, "reminder card is covering the Add tab");
+    T.click('.tab[data-tab="tiering"]');
+    assert(!T.$("#nudge").hidden, "reminder card should come back");
+  });
+
+  test("capture: an empty line adds nobody", async function () {
+    await boot(FNFake.makeState(2, 8), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.click('[data-act="quickadd"]');
+    eq(ev("state.contacts.length"), 2);
+  });
+
+  test("links: ?tab=add opens Add focused; ?add= fills the line; the address is cleaned", async function () {
+    await boot(FNFake.makeState(5, 8), { ver: "x", query: "&tab=add" });
+    eq(ev("tab"), "add");
+    eq(T.app().document.activeElement.id, "qLine");
+    assert(!/tab=/.test(T.app().location.search), "tab left in the address");
+    assert(/fntest=1/.test(T.app().location.search), "test flag was dropped");
+    await boot(FNFake.makeState(5, 8), { ver: "x", query: "&add=Sam%20Lee%20at%20GBM" });
+    eq(T.$("#qLine").value, "Sam Lee at GBM");
+    eq(ev("state.contacts.length"), 5, "a link must never save by itself");
+    await boot(FNFake.makeState(5, 8), { ver: "x", query: "&tab=log" });
+    eq(ev("tab"), "log");
+    var m = await (await fetch("../manifest.json?t=" + Date.now(), { cache: "no-store" })).json();
+    eq(m.shortcuts.map(function (x) { return x.url; }), ["./?tab=add", "./?tab=log"]);
+  });
+
+  /* ================= speed (v9.5) ================= */
+
+  test("rows: only the open row carries its form; editing still saves", async function () {
+    await boot(FNFake.makeState(200, 7), { ver: "x" });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    eq(T.$$(".row-body").length, 0, "collapsed rows should have no form");
+    var first = T.$(".row-head");
+    var id = first.dataset.id;
+    T.click(first);
+    eq(T.$$(".row-body").length, 1);
+    T.type('.row-body [data-act="setname"]', "Renamed Person");
+    T.type('.row-body [data-act="setnotes"]', "new note #hall");
+    T.click('.row-body [data-act="setpot"][data-val="Strong"]');
+    var c = ev("byId('" + id + "')");
+    eq([c.name, c.notes, c.potential], ["Renamed Person", "new note #hall", "Strong"]);
+    eq(T.stored().contacts.filter(function (x) { return x.id === id; })[0].name, "Renamed Person");
+  });
+
+  test("long lists draw 150 rows, then more on request; search still covers everyone", async function () {
+    var s = FNFake.makeState(1000, 7);
+    s.contacts[990].name = "Zed Lastperson"; s.contacts[990].tier = "Acquaintance"; s.contacts[990].potential = "";
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    eq(T.$$(".row").length, 150);
+    T.click('[data-act="showmore"]');
+    eq(T.$$(".row").length, 300);
+    T.type("#tierSearch", "Lastperson");
+    await wait(200);
+    eq(T.$$(".row").length, 1, "search should find someone beyond the drawn rows");
+  });
+
+  test("log: people you talk to most are one tap, no typing", async function () {
+    var s = FNFake.makeState(300, 7);
+    await boot(s, { ver: "x" });
+    T.click('.tab[data-tab="log"]');
+    var rows = T.$$('.logrow [data-act="marktouch"]');
+    assert(rows.length > 0 && rows.length <= 8, "expected 1-8 suggestions, got " + rows.length);
+    var id = rows[0].dataset.id;
+    T.click(rows[0]);
+    eq(ev("byId('" + id + "').lastContact"), ev("today()"));
+    assert(T.$$('.logrow.donetoday').length === 1, "should now appear under Logged today");
+  });
+
   /* ================= import and bulk moves (v9.3) ================= */
 
   test("import: one tap adds everyone as Acquaintance; existing and file tiers win; undo removes exactly the batch", async function () {
