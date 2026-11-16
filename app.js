@@ -95,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.6";
+  var APP_VERSION = "9.7";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -131,13 +131,21 @@
   var lastImport = null;              // { batch, ids } for the undo toast
   var selectMode = false, selected = {}, lastMove = null;
   var lastTagged = null, lastFollow = null;
-  var syncBusy = false, syncMsg = "", syncTimer = null;
+  var syncBusy = false, syncMsg = "", syncTimer = null, syncBad = false;
 
   function uid() {
     return Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
   }
   function today() { return new Date().toISOString().slice(0, 10); }
   function nowISO() { return new Date().toISOString(); }
+  function ago(iso) {
+    var s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+    if (isNaN(s)) return "";
+    if (s < 90) return "just now";
+    if (s < 3600) return Math.round(s / 60) + " min ago";
+    if (s < 86400 * 2) return Math.round(s / 3600) + " h ago";
+    return Math.round(s / 86400) + " days ago";
+  }
   function monthsSince(d) { return d ? Math.round((Date.now() - new Date(d)) / 2592000000) : null; }
   function daysSince(d) { return d ? Math.floor((Date.now() - new Date(d)) / 86400000) : null; }
   /* Whole days from a to b; negative when b precedes a. */
@@ -1627,22 +1635,29 @@
         '<p class="note">Off. Turn it on to edit from your phone and laptop and have both stay current. ' +
         'Your contacts are encrypted on this device with your passphrase before upload — the server only ever stores gibberish.</p>' +
         '<div class="field"><label class="f">Passphrase</label>' +
-          '<input type="password" id="syncPass" placeholder="Something you will remember" autocomplete="new-password"></div>' +
-        '<p class="hint">There is no reset. If you forget it, the synced copy is unreadable — including to me.</p>' +
+          '<input type="password" id="syncPass" placeholder="At least 8 characters" autocomplete="new-password"></div>' +
+        '<div class="field"><label class="f">Passphrase again</label>' +
+          '<input type="password" id="syncPass2" placeholder="Only needed when turning sync on" autocomplete="new-password"></div>' +
+        '<div class="warnbox"><strong>This passphrase cannot be recovered or reset.</strong> Nobody else has it, including the ' +
+          'server. If you forget it, the synced copy can never be read again. Write it down or save it in a password manager ' +
+          'before you turn sync on. Your contacts on this device are not affected either way.</div>' +
         '<div class="field"><button class="btn" data-act="syncon">Turn on sync</button></div>' +
         '<div class="field"><label class="f">Already synced on another device?</label>' +
           '<input type="text" id="syncJoin" placeholder="Paste the sync code from that device" autocomplete="off"></div>' +
         '<div class="field"><button class="btn-ghost" data-act="syncjoin">Join that sync</button></div>' +
-        (syncMsg ? '<p class="note ' + (/fail|wrong|could not|no sync/i.test(syncMsg) ? "bad" : "ok") + '">' + esc(syncMsg) + "</p>" : "") +
+        (syncMsg ? '<p class="note ' + (/fail|wrong|could not|no sync|do not match|at least|paste/i.test(syncMsg) ? "bad" : "ok") + '">' + esc(syncMsg) + "</p>" : "") +
       "</div>";
     }
     return '<div class="card"><h3>Sync <span class="dot-on"></span></h3>' +
-      '<p class="note">On. ' + (cfg.lastSync ? "Last synced " + esc(String(cfg.lastSync).slice(0, 16).replace("T", " ")) + " UTC." : "Not yet uploaded.") + "</p>" +
+      '<p class="note">On. ' + (cfg.lastSync
+        ? "Last synced " + esc(ago(cfg.lastSync)) + " (" + esc(new Date(cfg.lastSync).toLocaleString()) + ")."
+        : "Not uploaded yet.") + " Syncs by itself a few seconds after each change and when the app opens.</p>" +
       '<div class="field"><label class="f">Sync code — paste this on your other device</label>' +
         '<input type="text" readonly value="' + esc(cfg.id) + '" id="syncId" onclick="this.select()"></div>' +
       '<p class="hint">The code alone is useless without your passphrase.</p>' +
       '<div class="field"><button class="btn"' + (syncBusy ? " disabled" : "") + ' data-act="syncnow">' + (syncBusy ? "Syncing…" : "Sync now") + "</button></div>" +
-      (syncMsg ? '<p class="note ' + (/fail|wrong|could not|error/i.test(syncMsg) ? "bad" : "ok") + '">' + esc(syncMsg) + "</p>" : "") +
+      (syncMsg ? '<p class="note ' + (/fail|wrong|could not|error|paused/i.test(syncMsg) ? "bad" : "ok") + '">' + esc(syncMsg) + "</p>" : "") +
+      '<p class="hint">The passphrase cannot be recovered or reset. Keep a full backup (above) as well; sync is not a backup.</p>' +
       '<div class="field"><button class="btn-ghost" data-act="syncoff">Turn off sync on this device</button></div>' +
     "</div>";
   }
@@ -1652,7 +1667,10 @@
      ============================================================ */
   function render() {
     if (tab === "reconnect" && !reconnectVisible()) tab = "tiering";
-    document.getElementById("totalCount").textContent = state.contacts.length + " contacts";
+    var syncOn = window.FNSync && FNSync.enabled();
+    document.getElementById("totalCount").textContent = state.contacts.length + " contacts" +
+      (!syncOn ? "" : syncBad ? " \u00b7 sync problem, see Settings"
+        : FNSync.config().lastSync ? " \u00b7 synced " + ago(FNSync.config().lastSync) : " \u00b7 not synced yet");
     var pend = state.contacts.filter(function (c) { return c.pending; }).length;
     var pill = document.getElementById("pendingPill");
     pill.hidden = !pend;
@@ -1772,24 +1790,40 @@
     if (!(window.FNSync && FNSync.enabled()) || syncBusy) return;
     syncBusy = true;
     if (!quiet) { syncMsg = ""; render(); }
+    var stampAtStart = state.updatedAt, sent = state;
     FNSync.syncNow(state).then(function (res) {
       syncBusy = false;
-      state = migrate(res.state);
+      /* Anything you changed while the request was in flight is not in the
+         result. Fold the result into what is on screen now instead of
+         replacing it, then sync again to upload the difference. */
+      var changedMeanwhile = state !== sent || state.updatedAt !== stampAtStart;
+      state = migrate(changedMeanwhile ? FNSync.merge(state, res.state, stampAtStart) : res.state);
       save();
+      syncBad = false;
       syncMsg = "Synced " + new Date().toLocaleTimeString();
-      render();
+      // Do not redraw under someone who is typing; the next action will.
+      var a = document.activeElement;
+      if (!(a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== "file")) render();
       if (!quiet) toast("Synced");
+      if (changedMeanwhile) scheduleSync();
     }).catch(function (err) {
       syncBusy = false;
+      syncBad = true;
       var m = err && err.message ? err.message : "unknown";
       syncMsg = m === "WRONG_PASSPHRASE"
         ? "Wrong passphrase for this sync code."
+        : m === "RATE_LIMITED"
+          ? "Sync is paused for a few minutes (too many requests). Your changes are saved on this device."
+        : m === "TOO_LARGE"
+          ? "Sync failed: the data is over the 3 MB limit. Your changes are saved on this device; clean up old contacts or long notes."
         : /failed to fetch|networkerror|load failed/i.test(m)
           // Offline is the common case, and it is harmless: every edit is
           // already written to this device before sync is ever attempted.
           ? "No connection — your changes are saved on this device and will sync next time."
           : "Sync failed: " + m;
-      render();
+      if (/^No connection/.test(syncMsg)) syncBad = false;   // offline is normal, not a problem
+      var a2 = document.activeElement;
+      if (!(a2 && /^(INPUT|TEXTAREA)$/.test(a2.tagName) && a2.type !== "file")) render();
       if (!quiet) toast(syncMsg);
     });
   }
@@ -2046,6 +2080,11 @@
       case "syncon": {
         var pass = (document.getElementById("syncPass") || {}).value || "";
         if (pass.length < 8) { syncMsg = "Use at least 8 characters."; render(); break; }
+        if (pass !== ((document.getElementById("syncPass2") || {}).value || "")) {
+          syncMsg = "The two passphrases do not match. Nothing was turned on."; render(); break;
+        }
+        if (!confirm("This passphrase cannot be recovered or reset.\n\nIf you forget it, the synced copy can never be read. " +
+                     "Have you saved it somewhere safe?")) break;
         FNSync.enable(pass);
         syncMsg = "Sync on — uploading…";
         render();
@@ -2059,7 +2098,7 @@
         syncBusy = true; syncMsg = "Joining…"; render();
         FNSync.adopt(jid, jpass).then(function (remote) {
           syncBusy = false;
-          state = migrate(FNSync.merge(state, migrate(remote)));
+          state = migrate(FNSync.merge(state, migrate(remote), null));
           save();
           syncMsg = "Joined — " + state.contacts.length + " contacts after merge.";
           render(); toast("Sync joined");

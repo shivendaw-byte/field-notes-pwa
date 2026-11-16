@@ -505,6 +505,234 @@
     eq(ev("parseCSV(csvString())[0].followUp"), "lend the book, soon");
   });
 
+  /* ================= sync (v9.7) ================= */
+
+  /* Runs the real api/sync.js handler in the page against an in-memory stand-in
+     for Upstash. This checks the handler's logic; it is not a real round trip. */
+  async function makeServer(env) {
+    var code = await (await fetch("../api/sync.js?t=" + Date.now(), { cache: "no-store" })).text();
+    var store = new Map(), ttl = {};
+    function fakeFetch(url, opts) {
+      var cmd = JSON.parse(opts.body), op = String(cmd[0]).toUpperCase(), result = null;
+      if (op === "GET") result = store.has(cmd[1]) ? store.get(cmd[1]) : null;
+      else if (op === "SET") { store.set(cmd[1], cmd[2]); result = "OK"; }
+      else if (op === "DEL") result = store.delete(cmd[1]) ? 1 : 0;
+      else if (op === "INCR") { var n = (Number(store.get(cmd[1])) || 0) + 1; store.set(cmd[1], String(n)); result = n; }
+      else if (op === "EXPIRE") { ttl[cmd[1]] = Number(cmd[2]); result = 1; }
+      return Promise.resolve({ ok: true, json: function () { return Promise.resolve({ result: result }); } });
+    }
+    var module = { exports: null };
+    new Function("module", "process", "fetch", code)(module, { env: env === undefined ? { KV_REST_API_URL: "https://fake.example", KV_REST_API_TOKEN: "t" } : env }, fakeFetch);
+    function call(method, o) {
+      o = o || {};
+      return new Promise(function (resolve) {
+        var out = { status: 200, headers: {} };
+        var res = {
+          setHeader: function (k, v) { out.headers[k] = v; },
+          status: function (s) { out.status = s; return res; },
+          json: function (b) { out.body = b; resolve(out); return res; }
+        };
+        module.exports({ method: method, query: o.query || {}, body: o.body, headers: { "x-forwarded-for": o.ip || "203.0.113.5" } }, res);
+      });
+    }
+    return { call: call, store: store, ttl: ttl };
+  }
+  var ID_A = "11111111-1111-4111-8111-111111111111";
+  function uuid(n) { return ("00000000" + n.toString(16)).slice(-8) + "-0000-4000-8000-000000000000"; }
+
+  test("api: not configured returns 501; bad ids and empty blobs are refused", async function () {
+    var off = await makeServer({});
+    eq((await off.call("GET", { query: { id: ID_A } })).status, 501);
+    var s = await makeServer();
+    eq((await s.call("GET", { query: { id: "nope" } })).status, 400);
+    eq((await s.call("PUT", { body: { id: ID_A, blob: "" } })).status, 400);
+    eq((await s.call("GET", { query: { id: ID_A } })).status, 404);
+    eq((await s.call("PATCH", {})).status, 405);
+  });
+
+  test("api: write, read back, and a stale write gets 409 with the current copy", async function () {
+    var s = await makeServer();
+    var w1 = await s.call("PUT", { body: JSON.stringify({ id: ID_A, blob: "cipher-1", baseRev: 0 }) });
+    eq([w1.status, w1.body.rev], [200, 1]);
+    var r = await s.call("GET", { query: { id: ID_A } });
+    eq([r.status, r.body.blob, r.body.rev], [200, "cipher-1", 1]);
+    var w2 = await s.call("PUT", { body: { id: ID_A, blob: "cipher-2", baseRev: 1 } });
+    eq(w2.body.rev, 2);
+    var stale = await s.call("PUT", { body: { id: ID_A, blob: "cipher-old", baseRev: 1 } });
+    eq([stale.status, stale.body.blob], [409, "cipher-2"]);
+    eq((await s.call("GET", { query: { id: ID_A } })).body.blob, "cipher-2", "a stale write must not overwrite");
+  });
+
+  test("api: size cap is 3 MB", async function () {
+    var s = await makeServer();
+    var big = new Array(3 * 1024 * 1024 + 2).join("x");
+    eq((await s.call("PUT", { body: { id: ID_A, blob: big, baseRev: 0 } })).status, 413);
+    eq(s.store.has("fn:" + ID_A), false);
+    var ok = new Array(1024 * 1024).join("x");
+    eq((await s.call("PUT", { body: { id: ID_A, blob: ok, baseRev: 0 } })).status, 200);
+  });
+
+  test("api: rate limits per address, per sync id, and on creating new ids", async function () {
+    var s = await makeServer(), i, r;
+    // per address: 90 requests per window
+    for (i = 0; i < 90; i++) r = await s.call("GET", { query: { id: ID_A }, ip: "198.51.100.1" });
+    eq(r.status, 404);
+    r = await s.call("GET", { query: { id: ID_A }, ip: "198.51.100.1" });
+    eq([r.status, r.headers["Retry-After"]], [429, "300"]);
+    eq((await s.call("GET", { query: { id: ID_A }, ip: "198.51.100.2" })).status, 404, "another address is unaffected");
+    // per id: 40 writes per window, spread over addresses so only the id limit applies
+    var rev = 0;
+    for (i = 0; i < 40; i++) { r = await s.call("PUT", { body: { id: ID_A, blob: "b" + i, baseRev: rev }, ip: "10.0.0." + i }); rev = r.body.rev; }
+    eq(r.status, 200);
+    eq((await s.call("PUT", { body: { id: ID_A, blob: "b", baseRev: rev }, ip: "10.0.1.1" })).status, 429);
+    // new ids: 6 per address per day
+    for (i = 0; i < 6; i++) r = await s.call("PUT", { body: { id: uuid(i + 1), blob: "n", baseRev: 0 }, ip: "192.0.2.9" });
+    eq(r.status, 200);
+    eq((await s.call("PUT", { body: { id: uuid(99), blob: "n", baseRev: 0 }, ip: "192.0.2.9" })).status, 429);
+    eq(s.store.has("fn:" + uuid(99)), false);
+    assert(![].concat(Array.from(s.store.keys())).some(function (k) { return /198\.51|192\.0\.2|10\.0\./.test(k); }), "raw addresses were stored");
+    eq(s.ttl[Object.keys(s.ttl).filter(function (k) { return /rl:new/.test(k); })[0]], 86400);
+  });
+
+  test("merge: both devices edited the same person, so neither side's notes are dropped", async function () {
+    await boot(null);
+    var base = { id: "x", name: "Sam", tier: "Middle", notes: "base", interactions: ["2026-10-01"], tierLog: [], updatedAt: "2026-11-01T00:00:00Z" };
+    var phone = Object.assign({}, base, { notes: "phone wrote this", interactions: ["2026-10-01", "2026-11-10"], updatedAt: "2026-11-10T10:00:00Z" });
+    var laptop = Object.assign({}, base, { notes: "laptop wrote this", followUp: "send link", school: "Penn", updatedAt: "2026-11-09T10:00:00Z" });
+    function m(l, r, last) {
+      return ev("FNSync.merge(" + JSON.stringify({ contacts: [l], deleted: [], updatedAt: l.updatedAt }) + "," +
+        JSON.stringify({ contacts: [r], deleted: [], updatedAt: r.updatedAt }) + "," + JSON.stringify(last) + ").contacts[0]");
+    }
+    var out = m(phone, laptop, "2026-11-05T00:00:00Z");
+    eq(out.notes, "phone wrote this | other device: laptop wrote this");
+    eq([out.followUp, out.school, out.interactions], ["send link", "Penn", ["2026-10-01", "2026-11-10"]]);
+    // merging the result again adds nothing more
+    eq(m(out, laptop, "2026-11-05T00:00:00Z").notes, out.notes);
+    eq(m(laptop, out, "2026-11-05T00:00:00Z").notes, out.notes);
+    // only one side changed since the last sync: plain newer-wins, no appended text
+    eq(m(phone, base, "2026-11-05T00:00:00Z").notes, "phone wrote this");
+    eq(m(base, phone, "2026-11-05T00:00:00Z").notes, "phone wrote this");
+  });
+
+  test("merge: a delete on one device is not undone by the other; a later edit beats an earlier delete", async function () {
+    await boot(null);
+    var c = { id: "x", name: "Sam", tier: "Close", notes: "", interactions: [], tierLog: [], updatedAt: "2026-11-01T00:00:00Z" };
+    var now = new Date().toISOString();
+    var gone = ev("FNSync.merge(" + JSON.stringify({ contacts: [], deleted: [{ id: "x", at: now }], updatedAt: now }) + "," +
+      JSON.stringify({ contacts: [c], deleted: [], updatedAt: c.updatedAt }) + ", null).contacts.length");
+    eq(gone, 0);
+    var later = Object.assign({}, c, { updatedAt: new Date(Date.now() + 60000).toISOString() });
+    var kept = ev("FNSync.merge(" + JSON.stringify({ contacts: [], deleted: [{ id: "x", at: now }], updatedAt: now }) + "," +
+      JSON.stringify({ contacts: [later], deleted: [], updatedAt: later.updatedAt }) + ", null).contacts.length");
+    eq(kept, 1);
+  });
+
+  function route(server, ip) {
+    var win = T.app();
+    win.fetch = function (url, opts) {
+      opts = opts || {};
+      var u = new URL(url, win.location.href), q = {};
+      u.searchParams.forEach(function (v, k) { q[k] = v; });
+      return server.call((opts.method || "GET").toUpperCase(), { query: q, body: opts.body, ip: ip }).then(function (r) {
+        return { status: r.status, ok: r.status >= 200 && r.status < 300, json: function () { return Promise.resolve(r.body); } };
+      });
+    };
+  }
+  async function settle() {
+    for (var i = 0; i < 200; i++) { if (!ev("syncBusy")) return; await wait(25); }
+    throw new Error("sync never finished");
+  }
+
+  test("sync end to end: two devices, encrypted on the wire, edits and deletes travel both ways", async function () {
+    var server = await makeServer();
+    var s = FNFake.makeState(60, 31);
+    // device A turns sync on
+    await boot(s, { ver: "x" });
+    route(server, "10.1.1.1");
+    ev("FNSync.enable('correct horse battery')");
+    var id = ev("FNSync.config().id");
+    ev("doSync(false)"); await settle();
+    var stored = JSON.parse(server.store.get("fn:" + id));
+    var plain = atob(stored.blob);
+    assert(stored.blob.length > 1000 && plain.indexOf(s.contacts[0].name) === -1 && plain.indexOf("215-555-01") === -1 &&
+           plain.indexOf('"contacts"') === -1, "the server can read the data");
+    assert(/synced just now/.test(T.$("#totalCount").textContent), "no last-synced status: " + T.$("#totalCount").textContent);
+    var aStorage = localStorage.getItem(T.KEY), aCfg = localStorage.getItem("field-notes-sync");
+
+    // device B joins with the code and passphrase
+    await boot(null);
+    route(server, "10.1.1.2");
+    var remote = await ev("FNSync.adopt('" + id + "', 'correct horse battery')");
+    ev("state = migrate(FNSync.merge(state, migrate(" + JSON.stringify(remote) + "), null)); save(); render()");
+    eq(ev("state.contacts.length"), 60);
+    eq(tiersById(ev("state.contacts")), tiersById(s.contacts));
+    // B edits one person, deletes another, adds one
+    var edited = s.contacts[3].id, deleted = s.contacts[4].id;
+    ev("(function () { var c = byId('" + edited + "'); c.notes = 'edited on B'; c.tier = 'Close'; touch(c); deleteContact(byId('" + deleted + "')); " +
+       "state.contacts.unshift(blankContact({ id: 'newB', name: 'Added On B', added: today() })); commit(); })()");
+    ev("doSync(false)"); await settle();
+
+    // back on device A
+    localStorage.setItem(T.KEY, aStorage); localStorage.setItem("field-notes-sync", aCfg);
+    await boot(null, { keep: true });
+    route(server, "10.1.1.1");
+    ev("doSync(false)"); await settle();
+    eq(ev("state.contacts.length"), 60);
+    eq([ev("byId('" + edited + "').notes"), ev("byId('" + edited + "').tier"), ev("byId('" + deleted + "')"), ev("byId('newB').name")],
+       ["edited on B", "Close", null, "Added On B"]);
+
+    // wrong passphrase on a third device reads nothing
+    await boot(null);
+    route(server, "10.1.1.3");
+    var err = await ev("FNSync.adopt('" + id + "', 'wrong passphrase').then(function () { return 'read it'; }, function (e) { return e.message; })");
+    eq(err, "WRONG_PASSPHRASE");
+  });
+
+  test("sync: something added while a sync is in flight is kept and uploaded", async function () {
+    var server = await makeServer();
+    await boot(FNFake.makeState(20, 32), { ver: "x" });
+    route(server, "10.2.2.2");
+    ev("FNSync.enable('correct horse battery')");
+    ev("doSync(false)"); await settle();
+    ev("doSync(true)");                         // in flight...
+    assert(ev("syncBusy"), "expected a sync in progress");
+    ev("state.contacts.unshift(blankContact({ id: 'mid', name: 'Added Mid Sync', added: today() })); commit()");
+    await settle();
+    eq(ev("!!byId('mid')"), true, "the contact added during sync was dropped");
+    await wait(4300); await settle();           // the follow-up sync uploads it
+    var id = ev("FNSync.config().id");
+    var before = JSON.parse(server.store.get("fn:" + id)).rev;
+    assert(before >= 3, "follow-up sync did not run (rev " + before + ")");
+    eq(T.stored().contacts.some(function (c) { return c.id === "mid"; }), true);
+  });
+
+  test("sync setup: mismatched passphrases are refused and the warning is shown", async function () {
+    await boot(FNFake.makeState(3, 1), { ver: "x" });
+    T.click('[data-act="opensettings"]');
+    assert(/cannot be recovered or reset/.test(T.$(".warnbox").innerText));
+    T.$("#syncPass").value = "correct horse battery"; T.$("#syncPass2").value = "correct horse batery";
+    T.click('[data-act="syncon"]');
+    eq(ev("FNSync.enabled()"), false);
+    assert(/do not match/.test(T.text()));
+    // declining the confirm also leaves sync off
+    T.app().confirm = function () { return false; };
+    T.$("#syncPass").value = "correct horse battery"; T.$("#syncPass2").value = "correct horse battery";
+    T.click('[data-act="syncon"]');
+    eq(ev("FNSync.enabled()"), false);
+  });
+
+  test("sync: a rate-limit reply is explained and local data is untouched", async function () {
+    var server = await makeServer();
+    await boot(FNFake.makeState(10, 33), { ver: "x" });
+    route(server, "10.3.3.3");
+    ev("FNSync.enable('correct horse battery')");
+    for (var i = 0; i < 90; i++) await server.call("GET", { query: { id: ID_A }, ip: "10.3.3.3" });
+    ev("doSync(false)"); await settle();
+    assert(/paused for a few minutes/.test(ev("syncMsg")), ev("syncMsg"));
+    assert(/sync problem/.test(T.$("#totalCount").textContent));
+    eq(ev("state.contacts.length"), 10);
+  });
+
   /* ================= import and bulk moves (v9.3) ================= */
 
   test("import: one tap adds everyone as Acquaintance; existing and file tiers win; undo removes exactly the batch", async function () {

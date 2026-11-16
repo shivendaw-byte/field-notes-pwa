@@ -561,3 +561,10 @@ details.more > summary::-webkit-details-marker { display: none; }
 .balbar i.t-acquaintance { background: var(--acq); }
 .balbar i.t-networking { background: var(--net); }
 .baln { flex: 0 0 38px; text-align: right; font-family: ui-monospace, Menlo, monospace; color: var(--dim); font-size: 12px; }
+
+/* ---- v9.7: sync ---- */
+.warnbox {
+  margin-top: 12px; padding: 11px 13px; border-radius: 9px; font-size: 13px; line-height: 1.45;
+  border: 1px solid rgba(251,191,36,.45); background: rgba(251,191,36,.08); color: #fde68a;
+}
+.warnbox strong { display: block; margin-bottom: 3px; color: #fcd34d; }

@@ -9,7 +9,9 @@
  *
  * Conflicts are resolved per contact by `updatedAt`, not by overwriting the
  * whole file, so editing on your phone and laptop at the same time merges
- * instead of one side winning and eating the other's changes.
+ * instead of one side winning and eating the other's changes. When both
+ * devices edited the SAME person since the last sync, the newer copy wins the
+ * fields but the other side's notes are appended rather than dropped.
  */
 (function () {
   "use strict";
@@ -132,9 +134,27 @@
     return out;
   }
 
+  /* Both devices changed this person since they last agreed. The newer copy
+     has already won the plain fields; make sure nothing typed on the older
+     copy disappears without a trace. */
+  var FILL = ["company", "school", "location", "phone", "email", "potential"];
+  function keepBoth(out, loser) {
+    var wn = String(out.notes || ""), ln = String(loser.notes || "").trim();
+    if (ln && ln !== wn.trim() && wn.indexOf(ln) === -1) {
+      out.notes = wn ? wn.replace(/\s*$/, "") + " | other device: " + ln : ln;
+    }
+    var wf = String(out.followUp || "").trim(), lf = String(loser.followUp || "").trim();
+    if (lf && !wf) out.followUp = lf;
+    else if (lf && lf !== wf && wf.indexOf(lf) === -1) out.followUp = wf + " / " + lf;
+    FILL.forEach(function (k) { if (!out[k] && loser[k]) out[k] = loser[k]; });
+    return out;
+  }
+
   // Last-write-wins per contact, with tombstones so a delete on one device
   // is not resurrected by the other device still holding a copy.
-  function merge(local, remote) {
+  // `lastSync` is when this device last agreed with the server (ISO string or
+  // null). Without it every overlap is treated as a possible conflict.
+  function merge(local, remote, lastSync) {
     var byId = {}, i, c;
 
     for (i = 0; i < (remote.contacts || []).length; i++) {
@@ -147,10 +167,15 @@
       var r = byId[c.id];
       if (!r) { byId[c.id] = c; continue; }
       var winner = String(c.updatedAt || "") >= String(r.updatedAt || "") ? c : r;
+      var loser = winner === c ? r : c;
       // Histories are append-only facts, so they union rather than let the
       // newer side's copy win. Straight last-write-wins would silently drop
       // interactions and tier changes recorded on the other device.
-      byId[c.id] = mergeHistories(winner, c, r);
+      var out = mergeHistories(winner, c, r);
+      var bothChanged = !lastSync ||
+        (String(c.updatedAt || "") > lastSync && String(r.updatedAt || "") > lastSync);
+      if (bothChanged && String(c.updatedAt || "") !== String(r.updatedAt || "")) keepBoth(out, loser);
+      byId[c.id] = out;
     }
 
     var delMap = {};
@@ -185,6 +210,7 @@
       .then(function (r) {
         if (r.status === 404) return null;
         if (r.status === 501) return r.json().then(function (j) { throw new Error(j.hint || "Sync not configured"); });
+        if (r.status === 429) throw new Error("RATE_LIMITED");
         if (!r.ok) throw new Error("Could not reach sync (" + r.status + ")");
         return r.json();
       });
@@ -203,6 +229,10 @@
 
   /* Full round trip: pull, merge, push. Retries once on a 409 (someone else
      wrote between our read and our write). Returns the merged state. */
+  function uploadError(res) {
+    return new Error(res.status === 429 ? "RATE_LIMITED" : res.status === 413 ? "TOO_LARGE" : "Upload failed (" + res.status + ")");
+  }
+
   function syncNow(localState) {
     if (!enabled()) return Promise.reject(new Error("Sync is off"));
     var c = loadCfg();
@@ -212,7 +242,7 @@
         if (!rec) {
           return put(localState, 0).then(function (res) {
             if (res.status === 409 && retriesLeft > 0) return attempt(retriesLeft - 1);
-            if (!res.ok) throw new Error("Upload failed (" + res.status + ")");
+            if (!res.ok) throw uploadError(res);
             return res.json().then(function (j) {
               saveCfg(Object.assign({}, loadCfg(), { rev: j.rev, lastSync: j.updatedAt }));
               return { state: localState, merged: false };
@@ -220,10 +250,10 @@
           });
         }
         return decrypt(rec.blob).then(function (remoteState) {
-          var mergedState = merge(localState, remoteState);
+          var mergedState = merge(localState, remoteState, c.lastSync || null);
           return put(mergedState, rec.rev).then(function (res) {
             if (res.status === 409 && retriesLeft > 0) return attempt(retriesLeft - 1);
-            if (!res.ok) throw new Error("Upload failed (" + res.status + ")");
+            if (!res.ok) throw uploadError(res);
             return res.json().then(function (j) {
               saveCfg(Object.assign({}, loadCfg(), { rev: j.rev, lastSync: j.updatedAt }));
               return { state: mergedState, merged: true };

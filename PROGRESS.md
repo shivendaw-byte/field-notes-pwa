@@ -24,3 +24,9 @@ One entry per release. Newest last.
 - Speed: unchanged from v9.5 (Acquaintance list redraw about 30 ms, boot about 40 ms).
 - Decisions: see DECISIONS.md 7 to 10.
 - On your phone: Thanksgiving break prompt appears from Nov 21 if any rated Close/Middle person has a city other than Philadelphia.
+- Deploy v9.6: commit `ef34a67`. Both production sites confirmed on `APP_VERSION 9.6`, cache `field-notes-v25`.
+
+## v9.7 — sync hardening (2026-11-16)
+- Shipped: `/api/sync` now has a 3 MB size cap and three rate limits (90 requests per address per 5 minutes, 40 writes per sync id per 5 minutes, 6 new sync ids per address per day; addresses stored only as a short hash); turning sync on needs the passphrase typed twice, shows a plain warning that it cannot be recovered, and asks for a final confirm; when both devices edited the same person, the newer copy wins and the other side's notes are appended instead of dropped; a contact added while a sync is in flight is no longer lost (bug B1); "synced 3 min ago" shows under the app title when sync is on, and "sync problem, see Settings" when it is failing; rate-limit and size errors are explained in plain words.
+- Tests: 49 of 49 pass. Sync tests run the real `api/sync.js` handler and the real encryption in the browser against an in-memory stand-in for Upstash. That checks the logic. It is not a real round trip.
+- BLOCKED, needs you: real Upstash test. Both production sites answer `/api/sync` with 501 because neither Vercel project has an Upstash store. See DECISIONS.md 11 for the two-minute setup, then run `bash tools/sync_smoke.sh <site>`.
