@@ -32,9 +32,10 @@
   };
   var NOTE_TRIGGERS = ["role", "quality", "outreach"];
 
-  /* How long before someone counts as going cold. Close and Middle only —
-     Networking and Acquaintance are deliberately absent, so the 800-odd people
-     in those tiers can never generate a reminder.
+  /* How long before someone counts as going cold. Reminders (the card on open
+     and the Reach count) are for Close and Middle only — see tracked(). The
+     Acquaintance and Networking rows here only feed a folded "further out"
+     list on the Reach tab, so the 800-odd people in those tiers never nag.
 
      The clock does NOT require logging. It starts when someone enters a tracked
      tier and resets whenever you confirm you are in touch, so this works fine
@@ -82,6 +83,7 @@
   }
 
   function tierLabel(t) {
+    if (state && state.settings && state.settings.discreet) return TIER_SYMBOL[t] || t;
     var mode = setting("tierMode", "name");
     if (mode === "symbol") return TIER_SYMBOL[t] || t;
     if (mode === "emoji") return TIER_EMOJI[t] || t;
@@ -93,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.5";
+  var APP_VERSION = "9.6";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -128,6 +130,7 @@
   var importPreview = null;
   var lastImport = null;              // { batch, ids } for the undo toast
   var selectMode = false, selected = {}, lastMove = null;
+  var lastTagged = null, lastFollow = null;
   var syncBusy = false, syncMsg = "", syncTimer = null;
 
   function uid() {
@@ -173,7 +176,7 @@
     var c = {
       id: uid(), name: "", tier: "Acquaintance", potential: "",
       company: "", school: "", location: "", locationConfirmed: "",
-      notes: "", phone: "", email: "", pending: false, added: "",
+      notes: "", followUp: "", phone: "", email: "", pending: false, added: "",
       interactions: [], lastContact: "", tierLog: [],
       tierSince: "", snoozedUntil: "", updatedAt: nowISO()
     };
@@ -394,7 +397,7 @@
     if (!reconnectActive()) return null;
     var best = null, bestOver = -1;
     state.contacts.forEach(function (c) {
-      if (potLevel(c.potential) < MIN_POTENTIAL) return;
+      if (potLevel(c.potential) < MIN_POTENTIAL || !tracked(c)) return;
       var i = coldInfo(c);
       if (!i || !i.cold || i.snoozed) return;
       if (i.over > bestOver) { best = c; bestOver = i.over; }
@@ -442,6 +445,7 @@
             tierBadge(c.tier) +
             (c.company ? '<span class="tag co">' + esc(c.company) + "</span>" : "") +
             (c.school ? '<span class="tag sc">' + esc(c.school) + "</span>" : "") +
+            tagsOf(c).slice(0, 2).map(function (t) { return '<span class="tag tg">' + esc(t) + "</span>"; }).join("") +
             potMeter(c.potential) +
           "</span>" +
           (sub.length ? '<span class="row-sub">' + sub.join("") + "</span>" : "") +
@@ -480,8 +484,11 @@
         "</div>" +
         '<div class="field"><label class="f">Notes</label>' +
           '<textarea id="notes-' + c.id + '" rows="3" data-act="setnotes" data-id="' + c.id +
-          '" placeholder="Where you met, what you talked about \u2014 anything you want.">' + esc(c.notes) + "</textarea>" +
+          '" placeholder="Where you met, what you talked about. A word with # groups people: #geoclub">' + esc(c.notes) + "</textarea>" +
           noteChipsHTML(c) + "</div>" +
+        '<div class="field"><label class="f">Something I said I would do <span class="n">optional</span></label>' +
+          '<input type="text" value="' + esc(c.followUp || "") + '" data-act="setfollow" data-id="' + c.id +
+          '" placeholder="e.g. send her the article" autocomplete="off"></div>' +
         ((c.phone || c.email) ? '<div class="field" style="display:flex;gap:14px;flex-wrap:wrap">' +
           (c.phone ? '<a class="contactlink" href="tel:' + esc(digits(c.phone)) + '">Call</a>' : "") +
           (c.email ? '<a class="contactlink" href="mailto:' + esc(c.email) + '">Email</a>' : "") +
@@ -494,6 +501,24 @@
   /* ============================================================
      Views
      ============================================================ */
+  /* #tags typed anywhere in notes group people without a new field:
+     #geoclub, #hall, #classboard. Lower-cased so #Hall and #hall are one group. */
+  function tagsOf(c) {
+    var m = String(c.notes || "").match(/#[a-z0-9][a-z0-9_-]*/gi) || [], seen = {}, out = [];
+    m.forEach(function (t) { t = t.toLowerCase(); if (!seen[t]) { seen[t] = 1; out.push(t); } });
+    return out;
+  }
+  function tagValues() {
+    var map = {};
+    state.contacts.forEach(function (c) { tagsOf(c).forEach(function (t) { map[t] = (map[t] || 0) + 1; }); });
+    return Object.keys(map).sort(function (a, b) { return map[b] - map[a] || a.localeCompare(b); })
+      .map(function (k) { return { key: k, n: map[k] }; });
+  }
+  function cleanTag(raw) {
+    var t = String(raw || "").trim().toLowerCase().replace(/^#+/, "").replace(/[^a-z0-9_-]+/g, "");
+    return t ? "#" + t : "";
+  }
+
   function groupValues(field) {
     var map = {};
     state.contacts.forEach(function (c) {
@@ -592,6 +617,11 @@
           ? justImported()
           : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
       heading = tierFilter === "Imported" ? "the last import" : tierFilter;
+    } else if (browseBy === "tag") {
+      base = groupFilter
+        ? state.contacts.filter(function (c) { return tagsOf(c).indexOf(groupFilter) !== -1; })
+        : [];
+      heading = groupFilter || "";
     } else {
       var field = browseBy === "school" ? "school"
         : browseBy === "city" ? "location" : "company";
@@ -633,13 +663,16 @@
         ? '<button class="filter' + (tierFilter === "Imported" ? " on" : "") + '" data-act="filter" data-val="Imported">Just imported<span class="n">' + justImported().length + "</span></button>"
         : "");
     } else {
-      var vals = groupValues(browseBy === "school" ? "school"
+      var vals = browseBy === "tag" ? tagValues() : groupValues(browseBy === "school" ? "school"
         : browseBy === "city" ? "location" : "company");
       filtersHTML = vals.length
         ? vals.map(function (v) {
             return '<button class="filter' + (groupFilter === v.key ? " on" : "") + '" data-act="group" data-val="' + esc(v.key) + '">' + esc(v.key) + '<span class="n">' + v.n + "</span></button>";
           }).join("")
-        : '<span class="note">No ' + browseBy + ' tags yet — add them on any contact.</span>';
+        : browseBy === "tag"
+          ? '<span class="note">No tags yet. Type a word with # in anyone\'s notes, like #geoclub or #hall, ' +
+            'or use Select → Tag to tag several people at once.</span>'
+          : '<span class="note">No ' + browseBy + ' set on anyone yet — add it on any contact.</span>';
     }
 
     return pageHead("tiering", "Everyone, sorted", "Tiering") +
@@ -647,8 +680,9 @@
       onboardingHTML() +
       (pending.length ? '<div class="card warn rowsplit"><p class="note" style="margin:0">' + pending.length + ' imported contacts are waiting to be sorted.</p><button class="btn-ghost" data-act="gotoadd">Sort them →</button></div>' : "") +
       '<div class="seg" role="group" aria-label="Browse by">' +
-        ["tier", "school", "company", "city"].map(function (b) {
-          return '<button class="' + (browseBy === b ? "on" : "") + '" data-act="browseby" data-val="' + b + '">By ' + b + "</button>";
+        ["tier", "school", "company", "city", "tag"].map(function (b) {
+          return '<button class="' + (browseBy === b ? "on" : "") + '" data-act="browseby" data-val="' + b + '">' +
+            b.charAt(0).toUpperCase() + b.slice(1) + "</button>";
         }).join("") +
       "</div>" +
       (searchAll && tierQuery ? "" : '<div class="filters">' + filtersHTML + "</div>") +
@@ -689,7 +723,7 @@
         ? '<div class="cleanbar movebar"><span class="hint" style="margin:0">Move ' + Object.keys(selected).length + " to</span>" +
             '<div class="chips">' + TIERS.map(function (t) {
               return '<button class="chip" data-t="' + t + '" data-act="selmove" data-val="' + t + '">' + tierLabel(t) + "</button>";
-            }).join("") + "</div></div>"
+            }).join("") + '<button class="chip" data-act="seltag">+ Tag</button>' + "</div></div>"
         : "");
   }
 
@@ -860,9 +894,14 @@
 
   /* Reconnect is framed as opportunity, not debt: it only ever lists people you
      yourself rated as worth deepening, ordered by that rating. */
-  function worthReaching() {
+  function tracked(c) { return c.tier === "Close" || c.tier === "Middle"; }
+
+  /* Overdue and rated worth deepening. `trackedOnly` true gives Close and
+     Middle (the people reminders are about); false gives everyone else. */
+  function worthReaching(trackedOnly) {
     return state.contacts.filter(function (c) {
       if (potLevel(c.potential) < MIN_POTENTIAL) return false;
+      if (tracked(c) !== !!trackedOnly) return false;
       var i = coldInfo(c);
       return i && i.cold;
     }).sort(function (a, b) {
@@ -872,37 +911,176 @@
     });
   }
 
+  function fmtDay(iso) {
+    var d = new Date(String(iso).slice(0, 10) + "T12:00:00");
+    return isNaN(d.getTime()) ? String(iso || "") : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  /* Median days between logged conversations; 0 until there are three. */
+  function usualGap(c) {
+    var h = c.interactions || [];
+    if (h.length < 3) return 0;
+    var gaps = [];
+    for (var i = 1; i < h.length; i++) gaps.push(daysBetween(h[i - 1], h[i]));
+    gaps.sort(function (x, y) { return x - y; });
+    return gaps[Math.floor(gaps.length / 2)];
+  }
+  /* One plain sentence on why this person is showing up today. Facts only. */
+  function whyNow(c) {
+    var parts = [];
+    if (c.lastContact) {
+      var d = daysSince(c.lastContact);
+      parts.push("Last talked " + (d <= 0 ? "today" : d === 1 ? "yesterday" : d + " days ago"));
+      var g = usualGap(c);
+      if (g > 1 && d > g * 1.5) parts.push("you usually talk every " + g + " days");
+    } else if (c.tierSince) {
+      parts.push("In " + tierLabel(c.tier) + " since " + fmtDay(c.tierSince) + ", nothing logged yet");
+    }
+    return parts.join(" · ");
+  }
+  function snippet(text, n) {
+    var t = String(text || "").replace(/\s+/g, " ").trim();
+    return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  }
+
   function reachRowHTML(c) {
-    var where = [c.company, c.school, c.location].filter(Boolean).join(" \u00b7 ");
+    var why = whyNow(c);
     return '<div class="logrow reach">' +
       '<span class="body" data-act="opencontact" data-id="' + c.id + '">' +
         '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
-        '<span class="d">' + tierBadge(c.tier) + (where ? "<span>" + esc(where) + "</span>" : "") + "</span>" +
-        '<span class="reach-why">' + potMeter(c.potential) + "<span>" + esc(potBlurb(c.potential)) + "</span></span>" +
+        '<span class="d">' + tierBadge(c.tier) + potMeter(c.potential) + "</span>" +
+        (why ? '<span class="reach-why"><span>' + esc(why) + "</span></span>" : "") +
+        (c.notes ? '<span class="reach-ctx">' + esc(snippet(c.notes, 70)) + "</span>" : "") +
       "</span>" +
       '<button class="logbtn" data-act="marktouch" data-id="' + c.id + '">Log</button>' +
     "</div>";
   }
 
+  /* ---------- promises: "I said I would..." ---------- */
+  function promises() {
+    return state.contacts.filter(function (c) { return (c.followUp || "").trim(); })
+      .sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+  }
+  function promiseRowHTML(c) {
+    return '<div class="logrow reach">' +
+      '<span class="body" data-act="opencontact" data-id="' + c.id + '">' +
+        '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+        '<span class="reach-why"><span>' + esc(snippet(c.followUp, 90)) + "</span></span>" +
+      "</span>" +
+      '<button class="logbtn" data-act="followdone" data-id="' + c.id + '">Done</button>' +
+    "</div>";
+  }
+
+  /* ---------- the Penn calendar ----------
+     Breaks are when people outside Philadelphia are reachable, and a new term
+     is when last term's new faces fade. Known dates for 2026-27 come from the
+     University calendar; other years use the usual pattern. Nothing here needs
+     setting up, and a prompt only appears if it has someone to show. */
+  function nthWeekday(year, month, weekday, n) {
+    var d = new Date(year, month, 1, 12);
+    var shift = (weekday - d.getDay() + 7) % 7;
+    d.setDate(1 + shift + (n - 1) * 7);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  function seasonWindows(y) {
+    var tg = nthWeekday(y, 10, 4, 4);                 // fourth Thursday of November
+    var sb = nthWeekday(y, 2, 6, 1);                  // first Saturday of March
+    var w = [
+      { key: "term-spring", kind: "term", label: "New semester", start: y + "-01-14", end: y + "-01-28" },
+      { key: "spring", kind: "break", label: "Spring break", start: sb, end: addDays(sb, 8) },
+      { key: "summer", kind: "break", label: "Summer", start: y + "-05-18", end: y + "-08-23" },
+      { key: "term-fall", kind: "term", label: "New semester", start: y + "-08-25", end: y + "-09-08" },
+      { key: "thanksgiving", kind: "break", label: "Thanksgiving break", start: addDays(tg, -1), end: addDays(tg, 3) },
+      { key: "winter", kind: "break", label: "Winter break", start: y + "-12-23", end: (y + 1) + "-01-13" },
+      { key: "winter", kind: "break", label: "Winter break", start: (y - 1) + "-12-23", end: y + "-01-13" }
+    ];
+    // 2026-27 as published: spring classes start Jan 20, 2027.
+    if (y === 2026) w[5].end = "2027-01-19";
+    if (y === 2027) { w[6].end = "2027-01-19"; w[0].start = "2027-01-20"; w[0].end = "2027-02-03"; }
+    return w;
+  }
+  /* The window we are in, or one starting within 5 days. */
+  function seasonNow(t) {
+    t = t || today();
+    var w = seasonWindows(Number(t.slice(0, 4))), soon = null;
+    for (var i = 0; i < w.length; i++) {
+      if (t >= w[i].start && t <= w[i].end) return { key: w[i].key, kind: w[i].kind, label: w[i].label, start: w[i].start, end: w[i].end, startsIn: 0 };
+      var lead = daysBetween(t, w[i].start);
+      if (w[i].kind === "break" && lead > 0 && lead <= 5 && (!soon || lead < soon.startsIn)) {
+        soon = { key: w[i].key, kind: w[i].kind, label: w[i].label, start: w[i].start, end: w[i].end, startsIn: lead };
+      }
+    }
+    return soon;
+  }
+  var CAMPUS_RE = /philadelphia|philly|\bpenn\b|upenn|university city/i;
+  function seasonPeople(season, t) {
+    t = t || today();
+    var list;
+    if (season.kind === "break") {
+      var recent = addDays(t, -14);
+      list = state.contacts.filter(function (c) {
+        return tracked(c) && !c.pending && potLevel(c.potential) >= MIN_POTENTIAL &&
+          (c.location || "").trim() && !CAMPUS_RE.test(c.location) &&
+          !(c.lastContact && c.lastContact >= recent);
+      });
+    } else {
+      var since = addDays(t, -150);
+      list = state.contacts.filter(function (c) {
+        return !c.pending && potLevel(c.potential) >= MIN_POTENTIAL &&
+          c.added && c.added >= since && !c.lastContact;
+      });
+    }
+    return list.sort(byPotential).slice(0, 5);
+  }
+  function seasonHTML() {
+    var s = seasonNow();
+    if (!s) return "";
+    var people = seasonPeople(s);
+    if (!people.length) return "";
+    var head = s.label + (s.startsIn ? " starts in " + s.startsIn + " day" + (s.startsIn === 1 ? "" : "s")
+                                     : s.kind === "break" ? ", until " + fmtDay(s.end) : "");
+    var line = s.kind === "break"
+      ? "People you rated who are not in Philadelphia. A break is the easy time to see or message them."
+      : "People you added last term and rated, with nothing logged since.";
+    return '<div class="card season"><h3>' + esc(head) + "</h3>" +
+      '<p class="note">' + line + "</p>" +
+      '<div class="loglist">' + people.map(reachRowHTML).join("") + "</div></div>";
+  }
+
   function viewReconnect() {
-    var list = worthReaching();
+    var list = worthReaching(true), further = worthReaching(false), owed = promises();
     var rated = state.contacts.filter(function (c) {
       return potLevel(c.potential) >= MIN_POTENTIAL && !c.pending;
     }).length;
+    var season = seasonHTML();
 
     return pageHead("reconnect", "Opportunities", "Worth reaching out to") +
-      subLine("Rated worth deepening, not logged lately.") +
+      subLine("People you rated worth deepening, with a reason for each.") +
+
+      (owed.length
+        ? '<h3 class="logsec">You said you would <span class="n">' + owed.length + "</span></h3>" +
+          '<div class="loglist">' + owed.map(promiseRowHTML).join("") + "</div>"
+        : "") +
+
+      season +
 
       (!rated
-        ? '<div class="card"><h3>Nothing rated yet</h3><p class="note">Open anyone and set ' +
-          '<strong>Potential to deepen</strong>. Only Some, Strong and Rare ever appear here \u2014 ' +
-          'that rating is what makes this more than a contact list.</p></div>'
+        ? (owed.length || season ? "" :
+          '<div class="card"><h3>Nothing rated yet</h3><p class="note">Open anyone and set ' +
+          '<strong>Potential to deepen</strong>. Only Some, Moderate, Strong and Rare ever appear here — ' +
+          'that rating is what makes this more than a contact list.</p></div>')
         : list.length
-          ? '<div class="loglist">' + list.map(reachRowHTML).join("") + "</div>" +
-            '<p class="hint" style="margin-top:14px">' + rated + " people are rated worth deepening. " +
-            "Logging someone in the Daily log clears them from here.</p>"
-          : '<div class="card ok-card"><h3>All current</h3><p class="note">All ' + rated +
-            " of the people you rated worth deepening were logged recently.</p></div>");
+          ? '<h3 class="logsec">Close and Middle <span class="n">' + list.length + "</span></h3>" +
+            '<div class="loglist">' + list.map(reachRowHTML).join("") + "</div>"
+          : '<div class="card ok-card"><h3>All current</h3><p class="note">Everyone in Close and Middle that you ' +
+            "rated worth deepening was logged recently.</p></div>") +
+
+      (further.length
+        ? '<details class="more"><summary>Rated, but further out (' + further.length + ")</summary>" +
+          '<p class="hint">Acquaintance and Networking. Listed here only; they never trigger a reminder.</p>' +
+          '<div class="loglist">' + further.map(reachRowHTML).join("") + "</div></details>"
+        : "") +
+
+      (rated ? '<p class="hint" style="margin-top:14px">Logging someone clears them from here.</p>' : "");
   }
 
   var SUBTITLE_FIELDS = [
@@ -996,6 +1174,12 @@
               '" data-act="tiermode" data-val="' + o[0] + '">' + o[1] + "</button>";
           }).join("") +
         "</div></div>" +
+        '<div class="field"><label class="f">Discreet</label><div class="chips">' +
+          [["off", "Off"], ["on", "On"]].map(function (o) {
+            return '<button class="chip' + ((st.discreet ? "on" : "off") === o[0] ? " on" : "") +
+              '" data-act="discreet" data-val="' + o[0] + '">' + o[1] + "</button>";
+          }).join("") +
+        "</div><p class=\"hint\">Hides tier names and potential ratings everywhere. Tapping the Field Notes title switches it too.</p></div>" +
         '<div class="field"><label class="f">Subheadings</label><div class="chips">' +
           [["on", "Show"], ["off", "Hide"]].map(function (o) {
             return '<button class="chip' + (setting("showSub", "on") === o[0] ? " on" : "") +
@@ -1202,6 +1386,28 @@
     };
   }
 
+  /* Rising: talked more in the last 45 days than the 45 before. Fading: Close
+     or Middle, rated, talked at least twice in the 90 days before that and not
+     since. Both are descriptions, never prompts. */
+  function momentum() {
+    var t = today(), a45 = addDays(t, -45), a90 = addDays(t, -90), a135 = addDays(t, -135);
+    var rising = [], fading = [];
+    state.contacts.forEach(function (c) {
+      var h = c.interactions || [];
+      if (!h.length || c.pending) return;
+      var now = 0, before = 0, earlier = 0;
+      h.forEach(function (d) {
+        if (d > a45) now++;
+        else if (d > a90) before++;
+        if (d <= a45 && d > a135) earlier++;
+      });
+      if (now >= 2 && now > before) rising.push({ c: c, n: now });
+      else if (!now && earlier >= 2 && tracked(c) && potLevel(c.potential) >= MIN_POTENTIAL) fading.push({ c: c, n: earlier });
+    });
+    function top(list) { return list.sort(function (x, y) { return y.n - x.n; }).slice(0, 5); }
+    return { rising: top(rising), fading: top(fading) };
+  }
+
   function viewInsights() {
     var now = insightsFor(0), prev = insightsFor(1), prev2 = insightsFor(2);
 
@@ -1212,11 +1418,36 @@
         '<span class="t2">' + prev.monthShort + " " + b + "</span>" +
         '<span class="t1 ' + dir + '">' + now.monthShort + " " + a + "</span></div></div>";
     }
+    function personRow(c, detail) {
+      return '<div class="logrow"><span class="body" data-act="opencontact" data-id="' + c.id + '">' +
+        '<span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
+        '<span class="d">' + tierBadge(c.tier) + "<span>" + esc(detail) + "</span></span></span></div>";
+    }
+
+    // Tier balance
+    var active = state.contacts.filter(function (c) { return !c.pending; });
+    var total = active.length || 1;
+    var balance = TIERS.map(function (t) {
+      var n = active.filter(function (c) { return c.tier === t; }).length;
+      return '<div class="balrow"><span class="ball">' + tierLabel(t) + '</span>' +
+        '<span class="balbar"><i class="t-' + t.toLowerCase() + '" style="width:' + Math.max(n ? 2 : 0, Math.round(n / total * 100)) + '%"></i></span>' +
+        '<span class="baln">' + n + "</span></div>";
+    }).join("");
+
+    // Who this month
+    var key = now.key, month = [];
+    active.forEach(function (c) {
+      var n = (c.interactions || []).filter(function (d) { return monthKey(d) === key; }).length;
+      if (n) month.push({ c: c, n: n });
+    });
+    month.sort(function (x, y) { return y.n - x.n || (x.c.name || "").localeCompare(y.c.name || ""); });
+
+    var mo = momentum();
+    var tags = tagValues().slice(0, 8);
 
     return '<button class="back" data-act="settings">Back to settings</button>' +
       '<div class="eyebrow">' + esc(now.monthName) + "</div><h2>Trends</h2>" +
-      '<p class="sub">Three months of activity, for noticing patterns. These are not scores. ' +
-      'Fewer new people can mean you went deeper with the ones you have, and none of this sees how any of it felt.</p>' +
+      subLine("For noticing patterns. These are not scores, and none of this sees how any of it felt.") +
 
       '<div class="trends">' +
         trend("New people entered", now.added.length, prev.added.length, prev2.added.length) +
@@ -1224,17 +1455,36 @@
         trend("Conversations logged", now.logged, prev.logged, prev2.logged) +
       "</div>" +
 
+      '<h3 class="logsec">Your circle</h3><div class="card balance">' + balance + "</div>" +
+
+      (month.length
+        ? '<h3 class="logsec">Talked to this month <span class="n">' + month.length + "</span></h3><div class=\"loglist\">" +
+          month.slice(0, 10).map(function (x) { return personRow(x.c, x.n === 1 ? "once" : x.n + " times"); }).join("") + "</div>" +
+          (month.length > 10 ? '<p class="hint">And ' + (month.length - 10) + " more.</p>" : "")
+        : "") +
+
+      (mo.rising.length
+        ? '<h3 class="logsec">Rising</h3><p class="hint" style="margin-top:-4px">Talking more in the last 45 days than the 45 before.</p><div class="loglist">' +
+          mo.rising.map(function (x) { return personRow(x.c, x.n + " recent conversations"); }).join("") + "</div>"
+        : "") +
+      (mo.fading.length
+        ? '<h3 class="logsec">Gone quiet</h3><p class="hint" style="margin-top:-4px">Close or Middle, talked regularly before, nothing in 45 days.</p><div class="loglist">' +
+          mo.fading.map(function (x) { return personRow(x.c, whyNow(x.c)); }).join("") + "</div>"
+        : "") +
+
       (now.deepened.length
         ? '<h3 class="logsec">Moved closer this month</h3><div class="loglist">' +
-          now.deepened.map(function (m) {
-            return '<div class="logrow"><span class="body" data-act="opencontact" data-id="' + m.c.id + '">' +
-              '<span class="t">' + (esc(m.c.name) || "Unnamed") + "</span>" +
-              '<span class="d">' + esc(m.from) + " \u2192 " + esc(m.to) + "</span></span></div>";
+          now.deepened.map(function (m) { return personRow(m.c, m.from + " → " + m.to); }).join("") + "</div>"
+        : "") +
+
+      (tags.length
+        ? '<h3 class="logsec">Groups</h3><div class="filters">' + tags.map(function (v) {
+            return '<button class="filter" data-act="opentag" data-val="' + esc(v.key) + '">' + esc(v.key) + '<span class="n">' + v.n + "</span></button>";
           }).join("") + "</div>"
         : "") +
 
       '<p class="hint" style="margin-top:18px">Counts people entered in the app and tier changes made here. ' +
-      'Imported contacts are excluded.</p>';
+      'Imported contacts are excluded from "new people".</p>';
   }
 
   /* ---------- cleanup: bulk triage of contacts that no longer matter ---------- */
@@ -1408,7 +1658,8 @@
     pill.hidden = !pend;
     pill.textContent = pend;
 
-    var coldN = state.contacts.filter(function (c) { var i = coldInfo(c); return i && i.cold && !c.pending; }).length;
+    var coldN = worthReaching(true).length + promises().length;
+    document.body.classList.toggle("discreet", !!state.settings.discreet);
     var cpill = document.getElementById("coldPill");
     if (cpill) { cpill.hidden = !coldN; cpill.textContent = coldN; }
 
@@ -1482,14 +1733,16 @@
     if (!host) return;
     var c = nudgeFor ? byId(nudgeFor) : null;
     var i = c ? coldInfo(c) : null;
-    // Never over the Add tab: it would sit on top of what you are typing.
-    if (!c || !i || !i.cold || tab === "add" || importPreview || cleanup) { host.hidden = true; host.innerHTML = ""; return; }
+    // Never over the Add tab (it would sit on what you are typing) or the
+    // Reach tab (the same person is already in the list underneath).
+    if (!c || !i || !i.cold || tab === "add" || tab === "reconnect" || importPreview || cleanup) { host.hidden = true; host.innerHTML = ""; return; }
     host.hidden = false;
     host.innerHTML =
       '<div class="nudge-body">' +
         '<span class="nudge-lbl">Worth reaching out to</span>' +
         '<strong>' + esc(c.name) + "</strong>" +
-        '<span class="nudge-sub">' + c.tier + " · " + esc(potBlurb(c.potential)) + "</span>" +
+        '<span class="nudge-sub">' + tierLabel(c.tier) + " · " + esc(whyNow(c) || potBlurb(c.potential)) + "</span>" +
+        ((c.followUp || c.notes) ? '<span class="nudge-ctx">' + esc(snippet(c.followUp ? "You said: " + c.followUp : c.notes, 80)) + "</span>" : "") +
       "</div>" +
       '<div class="nudge-acts">' +
         '<button class="tbtn primary" data-act="marktouch" data-id="' + c.id + '">Spoke recently</button>' +
@@ -1733,6 +1986,55 @@
         render();
         break;
       }
+      case "seltag": {
+        var tids = Object.keys(selected);
+        if (!tids.length) break;
+        var tg = cleanTag(prompt("Tag for " + tids.length + (tids.length === 1 ? " person" : " people") + " (one word, e.g. geoclub)", ""));
+        if (!tg) break;
+        lastTagged = [];
+        tids.forEach(function (tid) {
+          var tc = byId(tid);
+          if (!tc || tagsOf(tc).indexOf(tg) !== -1) return;
+          lastTagged.push({ id: tc.id, notes: tc.notes });
+          tc.notes = (tc.notes ? tc.notes.replace(/\s*$/, "") + " " : "") + tg;
+          touch(tc);
+        });
+        selected = {}; selectMode = false;
+        commit();
+        toast("Tagged " + lastTagged.length + " " + tg, lastTagged.length ? "Undo" : null, "undotag");
+        break;
+      }
+      case "undotag": {
+        if (!lastTagged) { toast("Nothing to undo"); break; }
+        lastTagged.forEach(function (m) { var uc2 = byId(m.id); if (uc2) { uc2.notes = m.notes; touch(uc2); } });
+        var un = lastTagged.length; lastTagged = null;
+        commit();
+        toast("Removed the tag from " + un);
+        break;
+      }
+      case "opentag":
+        tab = "tiering"; browseBy = "tag"; groupFilter = val; tierQuery = ""; searchAll = false;
+        openId = null; orderSnapshot = null; listLimit = LIST_STEP;
+        render();
+        break;
+      case "followdone": {
+        if (!c) break;
+        lastFollow = { id: c.id, text: c.followUp };
+        c.followUp = ""; touch(c); commit();
+        toast("Done", "Undo", "undofollow");
+        break;
+      }
+      case "undofollow": {
+        var fc = lastFollow ? byId(lastFollow.id) : null;
+        if (fc) { fc.followUp = lastFollow.text; touch(fc); commit(); toast("Put back"); }
+        lastFollow = null;
+        break;
+      }
+      case "discreet":
+        state.settings.discreet = val ? val === "on" : !state.settings.discreet;
+        commit();
+        toast(state.settings.discreet ? "Discreet on \u2014 tier names and ratings hidden" : "Discreet off");
+        break;
       case "selmove": {
         var sids = Object.keys(selected);
         if (sids.length) bulkMove(sids, val);
@@ -1832,7 +2134,7 @@
     if (!c) return;
     var map = {
       setloc: "location", setnotes: "notes", setco: "company", setsc: "school",
-      setphone: "phone", setemail: "email", setname: "name"
+      setphone: "phone", setemail: "email", setname: "name", setfollow: "followUp"
     };
     var field = map[el.dataset.act];
     if (!field) return;
@@ -2012,6 +2314,7 @@
         tier: hasTier ? row.tier : "Acquaintance",
         potential: potLevel(row.potential) ? row.potential : "",
         locationConfirmed: row.locationconfirmed || "",
+        followUp: row.followup || "",
         company: row.company || row.organization || "",
         school: row.school || "",
         location: row.location || row.city || "",
@@ -2255,7 +2558,7 @@
      every date you ever logged. */
   function csvString() {
     var cols = ["name", "tier", "potential", "company", "school",
-                "location", "locationConfirmed", "lastContact", "notes", "phone", "email",
+                "location", "locationConfirmed", "lastContact", "notes", "followUp", "phone", "email",
                 "interactions", "tierchanges"];
     var lines = [cols.join(",")];
     state.contacts.forEach(function (c) {
@@ -2357,6 +2660,13 @@
       else location.reload();
     }
   };
+
+  var brandEl = document.querySelector(".brand");
+  if (brandEl) {
+    brandEl.setAttribute("data-act", "discreet");
+    brandEl.setAttribute("role", "button");
+    brandEl.setAttribute("title", "Tap to hide or show tier names");
+  }
 
   if (TEST) window.__FN = { eval: function (code) { return eval(code); } };
 

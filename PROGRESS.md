@@ -16,3 +16,11 @@ One entry per release. Newest last.
 - Tests: 27 of 27 pass.
 - Speed (955 fake people, desktop browser): redrawing the Acquaintance list 190 ms -> 28 ms; HTML per redraw about 2 MB -> 84 KB; boot 83 ms -> 36 ms; one capture 7 ms.
 - Decisions: see DECISIONS.md 5 and 6.
+- Deploy v9.5: commit `792cda3`. Both production sites confirmed on `APP_VERSION 9.5` (the second site took about two minutes to switch over).
+
+## v9.6 — reconnect reasons and recall (2026-11-16)
+- Shipped: the reminder card and the Reach count are now Close and Middle only (rated Acquaintance and Networking people sit in a folded "further out" list on the Reach tab and never trigger anything); every card and Reach row says why now ("Last talked 40 days ago · you usually talk every 10 days") plus a line of your notes; an optional "Something I said I would do" on each person, listed on Reach until you tap Done; break prompts from the Penn calendar (Thanksgiving, winter, spring, summer: rated Close/Middle people outside Philadelphia; new semester: rated people added last term with nothing logged), shown only when there is someone to list; `#tags` in notes with a Tag view and Select -> "+ Tag" for tagging many at once; Trends gained Your circle, Talked to this month, Rising, Gone quiet and Groups; discreet mode (tap the Field Notes title) hides tier names and ratings.
+- Tests: 39 of 39 pass.
+- Speed: unchanged from v9.5 (Acquaintance list redraw about 30 ms, boot about 40 ms).
+- Decisions: see DECISIONS.md 7 to 10.
+- On your phone: Thanksgiving break prompt appears from Nov 21 if any rated Close/Middle person has a city other than Philadelphia.

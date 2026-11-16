@@ -539,3 +539,25 @@ details.more > summary::-webkit-details-marker { display: none; }
 .justadded h3 .n { font-weight: 400; color: var(--dim); font-size: 13px; margin-left: 6px; }
 .showmore { width: 100%; margin-top: 10px; }
 .capture .btn { width: 100%; }
+
+/* ---- v9.6: reasons, promises, tags, overview, discreet ---- */
+.tag.tg { background: rgba(52,211,153,.1); color: #6ee7b7; }
+.reach-ctx, .nudge-ctx { display: block; font-size: 12px; color: var(--dim); margin-top: 2px; overflow-wrap: anywhere; }
+.reach-why { flex-wrap: wrap; }
+.card.season { border-color: rgba(56,189,248,.3); }
+.card.season .loglist { margin-top: 10px; }
+.seg { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.seg::-webkit-scrollbar { display: none; }
+.seg button { white-space: nowrap; }
+.brand { cursor: pointer; user-select: none; -webkit-user-select: none; }
+.discreet .pot, .discreet .scalerow .pot { display: none; }
+.balance { padding: 12px 14px; }
+.balrow { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; }
+.ball { flex: 0 0 104px; color: var(--muted); }
+.balbar { flex: 1; height: 8px; border-radius: 4px; background: rgba(255,255,255,.06); overflow: hidden; }
+.balbar i { display: block; height: 100%; border-radius: 4px; }
+.balbar i.t-close { background: var(--close); }
+.balbar i.t-middle { background: var(--middle); }
+.balbar i.t-acquaintance { background: var(--acq); }
+.balbar i.t-networking { background: var(--net); }
+.baln { flex: 0 0 38px; text-align: right; font-family: ui-monospace, Menlo, monospace; color: var(--dim); font-size: 12px; }

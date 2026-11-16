@@ -78,6 +78,11 @@
         return;
       }
     }
+    // Refresh the browser's cached copy of every app file, so the frame can
+    // never run an old stylesheet or script against new tests.
+    await Promise.all(["styles.css", "app.js", "sync.js", "data.js", "manifest.json"].map(function (f) {
+      return fetch("../" + f, { cache: "reload" }).catch(function () {});
+    }));
     var pass = 0, failures = [], only = (location.hash || "").slice(1);
     for (var i = 0; i < tests.length; i++) {
       var t = tests[i];

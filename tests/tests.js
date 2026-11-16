@@ -331,6 +331,180 @@
     assert(T.$$('.logrow.donetoday').length === 1, "should now appear under Logged today");
   });
 
+  /* ================= reconnect (v9.6) ================= */
+
+  function person(over) {
+    return Object.assign(FNFake.makeContacts(1, Math.floor(Math.random() * 1e6))[0],
+      { potential: "Rare", interactions: [], lastContact: "", tierSince: "2025-01-01", notes: "", location: "", added: "" }, over);
+  }
+
+  test("reminders are for Close and Middle only: Acquaintance and Networking never reach the card or the count", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(person({ id: "acq", name: "Acq Rare", tier: "Acquaintance" }));
+    s.contacts.push(person({ id: "net", name: "Net Rare", tier: "Networking" }));
+    await boot(s, { ver: "x" });
+    eq(ev("nudgeCandidate()"), null, "an Acquaintance or Networking contact produced a reminder");
+    assert(T.$("#nudge").hidden, "card shown");
+    assert(T.$("#coldPill").hidden, "Reach count shown");
+    T.click('.tab[data-tab="reconnect"]');
+    assert(/All current|further out/.test(T.text()), "Reach tab should say nobody is due");
+    eq(T.$$("details.more .logrow").length, 2, "they should only be in the folded 'further out' list");
+    eq(T.$("details.more").open, false);
+    // now a Middle person: exactly one card, for them
+    ev("state.contacts.push(blankContact({ id: 'mid', name: 'Mid Strong', tier: 'Middle', potential: 'Strong', tierSince: '2025-01-01' })); nudgeFor = (nudgeCandidate() || {}).id; commit()");
+    eq(ev("nudgeCandidate().id"), "mid");
+    eq(T.$("#coldPill").textContent, "1");
+  });
+
+  test("one card at a time; Later snoozes and does not queue the next person", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 5; i++) s.contacts.push(person({ id: "c" + i, name: "Close " + i, tier: "Close" }));
+    await boot(s, { ver: "x" });
+    eq(T.$$("#nudge strong").length, 1);
+    T.click('[data-act="nudgesnooze"]');
+    assert(T.$("#nudge").hidden, "another card appeared mid-session");
+    eq(ev("state.contacts.filter(function (c) { return c.snoozedUntil; }).length"), 1);
+  });
+
+  test("why now: each reason is a plain fact", async function () {
+    await boot(null);
+    var iso = FNFake.iso;
+    var a = ev("whyNow(" + JSON.stringify(person({ tier: "Close", interactions: [iso(40)], lastContact: iso(40) })) + ")");
+    eq(a, "Last talked 40 days ago");
+    var b = ev("whyNow(" + JSON.stringify(person({ tier: "Close", interactions: [iso(70), iso(60), iso(50), iso(40)], lastContact: iso(40) })) + ")");
+    eq(b, "Last talked 40 days ago \u00b7 you usually talk every 10 days");
+    var c = ev("whyNow(" + JSON.stringify(person({ tier: "Middle", tierSince: "2026-09-03" })) + ")");
+    assert(/^In Middle since Sep 3, nothing logged yet$/.test(c), c);
+  });
+
+  test("the card and Reach rows show the reason and context", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(person({ id: "p1", name: "Pat Reason", tier: "Close", interactions: [FNFake.iso(50)], lastContact: FNFake.iso(50), notes: "Met at Geography Club" }));
+    await boot(s, { ver: "x" });
+    assert(/Last talked 50 days ago/.test(T.$("#nudge").innerText), T.$("#nudge").innerText);
+    assert(/Met at Geography Club/.test(T.$("#nudge").innerText));
+    T.click('.tab[data-tab="reconnect"]');
+    assert(/Last talked 50 days ago/.test(T.$(".logrow.reach").innerText));
+    T.click('.logrow.reach [data-act="marktouch"]');
+    eq(T.$$(".logrow.reach").length, 0, "logging should clear them");
+  });
+
+  test("promises: a follow-up shows on Reach until Done, with undo, for any tier", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(person({ id: "p1", name: "Promise Person", tier: "Acquaintance", potential: "" }));
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    T.click(".row-head");
+    T.type('[data-act="setfollow"]', "send the article");
+    eq(ev("byId('p1').followUp"), "send the article");
+    assert(T.$("#nudge").hidden, "a promise must not create a reminder card");
+    T.click('.tab[data-tab="reconnect"]');
+    assert(/you said you would/i.test(T.text()) && /send the article/.test(T.text()), "promise not listed");
+    T.click('[data-act="followdone"]');
+    eq(ev("byId('p1').followUp"), "");
+    T.click('[data-act="undofollow"]');
+    eq(ev("byId('p1').followUp"), "send the article");
+  });
+
+  test("Penn calendar: windows for 2026-27 match the published dates", async function () {
+    await boot(null);
+    function at(d) { var s = ev("seasonNow('" + d + "')"); return s ? s.key + ":" + s.startsIn : null; }
+    eq(at("2026-11-16"), null, "ten days out is too early");
+    eq(at("2026-11-21"), "thanksgiving:4");
+    eq(at("2026-11-26"), "thanksgiving:0");
+    eq(at("2026-11-30"), null);
+    eq(at("2026-12-25"), "winter:0");
+    eq(at("2027-01-10"), "winter:0");
+    eq(at("2027-01-19"), "winter:0");
+    eq(at("2027-01-20"), "term-spring:0");
+    eq(at("2027-03-06"), "spring:0");
+    eq(at("2027-03-14"), "spring:0");
+    eq(at("2027-03-16"), null);
+    eq(at("2027-07-04"), "summer:0");
+    eq(at("2027-08-26"), "term-fall:0");
+    eq(at("2027-10-10"), null);
+  });
+
+  test("break prompt: lists rated Close/Middle people outside Philadelphia, at most 5, and hides when empty", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 7; i++) s.contacts.push(person({ id: "h" + i, name: "Home " + i, tier: "Middle", location: "Chicago", tierSince: FNFake.iso(1) }));
+    s.contacts.push(person({ id: "ph", name: "Philly Person", tier: "Close", location: "Philadelphia", tierSince: FNFake.iso(1) }));
+    s.contacts.push(person({ id: "aq", name: "Acq Away", tier: "Acquaintance", location: "Boston" }));
+    s.contacts.push(person({ id: "rc", name: "Recent Away", tier: "Close", location: "Austin", interactions: [FNFake.iso(2)], lastContact: FNFake.iso(2) }));
+    await boot(s, { ver: "x" });
+    var names = ev("seasonPeople({ kind: 'break' }).map(function (c) { return c.name; })");
+    eq(names.length, 5);
+    assert(names.every(function (n) { return /^Home/.test(n); }), names.join());
+    eq(ev("(function () { state.contacts.forEach(function (c) { c.location = ''; }); return seasonPeople({ kind: 'break' }).length; })()"), 0);
+  });
+
+  /* ================= recall (v9.6) ================= */
+
+  test("tags: #words in notes group people; Tag view lists them; bulk tag has undo", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 6; i++) s.contacts.push(person({ id: "t" + i, name: "Tag " + i, tier: "Acquaintance", potential: "", notes: i < 2 ? "likes maps #GeoClub" : "" }));
+    await boot(s, { ver: "x" });
+    eq(ev("tagValues()"), [{ key: "#geoclub", n: 2 }]);
+    T.click('[data-act="browseby"][data-val="tag"]');
+    T.click('[data-act="group"][data-val="#geoclub"]');
+    eq(T.$$(".row").length, 2);
+    // bulk tag three more
+    T.click('[data-act="browseby"][data-val="tier"]');
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    T.click('[data-act="selmode"]');
+    ["t3", "t4", "t5"].forEach(function (id) { T.click('[data-act="selpick"][data-id="' + id + '"]'); });
+    T.app().prompt = function () { return "  Hall Floor 3 "; };
+    T.click('[data-act="seltag"]');
+    eq(ev("tagValues()"), [{ key: "#hallfloor3", n: 3 }, { key: "#geoclub", n: 2 }]);
+    eq(ev("byId('t3').notes"), "#hallfloor3");
+    T.click('[data-act="undotag"]');
+    eq(ev("tagValues()"), [{ key: "#geoclub", n: 2 }]);
+    eq(ev("byId('t3').notes"), "");
+  });
+
+  test("capture with a #tag lands in that group", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.type("#qLine", "Sam Lee at the GBM #geoclub");
+    T.key("#qLine", "Enter");
+    eq(ev("tagsOf(state.contacts[0])"), ["#geoclub"]);
+    eq(ev("state.contacts[0].name"), "Sam Lee");
+  });
+
+  test("trends: circle, this month, rising and gone quiet render from history", async function () {
+    var iso = FNFake.iso, s = FNFake.makeState(0, 1);
+    s.contacts.push(person({ id: "r", name: "Rising One", tier: "Middle", interactions: [iso(20), iso(10), iso(1)], lastContact: iso(1) }));
+    s.contacts.push(person({ id: "f", name: "Quiet One", tier: "Close", interactions: [iso(100), iso(80), iso(60)], lastContact: iso(60) }));
+    s.contacts.push(person({ id: "n", name: "Never One", tier: "Acquaintance", potential: "" }));
+    await boot(s, { ver: "x" });
+    var m = ev("momentum()");
+    eq([m.rising.map(function (x) { return x.c.id; }), m.fading.map(function (x) { return x.c.id; })], [["r"], ["f"]]);
+    T.click('[data-act="opensettings"]');
+    T.click('[data-act="opentrends"]');
+    var t = T.text();
+    assert(/your circle/i.test(t) && /rising/i.test(t) && /gone quiet/i.test(t) && /Rising One/.test(t) && /Quiet One/.test(t), t.slice(-400));
+  });
+
+  test("discreet: tapping the title hides tier names and ratings, and tapping again restores them", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(person({ id: "d", name: "Discreet One", tier: "Close", tierSince: FNFake.iso(1) }));
+    await boot(s, { ver: "x" });
+    assert(/Close/.test(T.$(".filters").innerText));
+    T.click(".brand");
+    assert(!/Close|Middle|Acquaintance|Networking/.test(T.$(".filters").innerText), "tier names still visible: " + T.$(".filters").innerText);
+    eq(T.app().getComputedStyle(T.$(".row .pot")).display, "none");
+    eq(ev("state.settings.discreet"), true);
+    T.click(".brand");
+    assert(/Close/.test(T.$(".filters").innerText));
+  });
+
+  test("CSV carries the follow-up promise", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(person({ id: "p", name: "Csv Promise", followUp: "lend the book, soon" }));
+    await boot(s, { ver: "x" });
+    eq(ev("parseCSV(csvString())[0].followUp"), "lend the book, soon");
+  });
+
   /* ================= import and bulk moves (v9.3) ================= */
 
   test("import: one tap adds everyone as Acquaintance; existing and file tiers win; undo removes exactly the batch", async function () {
