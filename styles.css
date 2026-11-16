@@ -56,7 +56,7 @@ h2 { font-family: ui-serif, Georgia, serif; font-size: 20px; font-weight: 400; m
 h3 { font-size: 14px; font-weight: 500; margin: 0 0 11px; }
 
 /* ---------- inputs ---------- */
-input[type=text], input[type=search], input[type=file], textarea, select {
+input[type=text], input[type=search], input[type=tel], input[type=email], input[type=password], input[type=file], textarea, select {
   width: 100%; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
   color: var(--text); font: inherit; font-size: 16px; padding: 11px 12px; outline: none;
 }
@@ -170,7 +170,11 @@ label.f { display: block; font-size: 10.5px; text-transform: uppercase; letter-s
 .queue-pos { font-family: ui-monospace, monospace; font-size: 11px; color: var(--faint); }
 .queue-name { font-family: ui-serif, Georgia, serif; font-size: 22px; margin: 6px 0 2px; }
 .rowsplit { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-a.contactlink { color: var(--net); text-decoration: none; font-size: 12.5px; }
+a.contactlink {
+  color: var(--net); text-decoration: none; font-size: 14px;
+  display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 14px;
+  border: 1px solid var(--line); border-radius: 8px;
+}
 a.contactlink:hover { text-decoration: underline; }
 
 /* ---------- toast ---------- */

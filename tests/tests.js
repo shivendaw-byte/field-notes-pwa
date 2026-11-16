@@ -30,6 +30,40 @@
     assert(ev("TEST") === true);
   });
 
+  test("first run: a new user is pointed at Add, and one tap gets them typing", async function () {
+    await boot(null);
+    assert(/Start with one person/.test(T.text()));
+    T.click('[data-act="gotoadd"]');
+    eq(T.app().document.activeElement.id, "qLine");
+    T.type("#qLine", "First Person"); T.key("#qLine", "Enter");
+    T.click('.tab[data-tab="tiering"]');
+    assert(!/Start with one person/.test(T.text()), "welcome card should go once someone exists");
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    eq(T.$$(".row").length, 1);
+  });
+
+  test("accessibility: every field has a name; controls are at least 40px tall", async function () {
+    var s = FNFake.makeState(40, 7);
+    s.contacts[0].tier = "Close"; s.contacts[0].phone = "215-555-0100"; s.contacts[0].email = "a@example.com";
+    await boot(s, { ver: "x" });
+    var bad = [];
+    function scan(label) {
+      T.$$("#view input, #view textarea").forEach(function (e) {
+        if (e.type !== "file" && !e.getAttribute("aria-label")) bad.push(label + ": unnamed " + (e.id || e.dataset.act));
+      });
+      T.$$("#view button, #view a, #view input, #view textarea, #view summary").forEach(function (e) {
+        var r = e.getBoundingClientRect();
+        if (r.height && r.height < 39.5 && e.type !== "file") bad.push(label + ": " + Math.round(r.height) + "px " + (e.className || e.tagName) + " " + (e.dataset.act || e.id || ""));
+      });
+    }
+    scan("tiering"); T.click(".row-head"); scan("open row");
+    ["log", "reconnect", "add"].forEach(function (t) { T.click('.tab[data-tab="' + t + '"]'); scan(t); });
+    T.$("#qMore").open = true; scan("add details");
+    T.click('[data-act="opensettings"]'); scan("settings");
+    T.click('[data-act="opentrends"]'); scan("trends");
+    eq(bad.filter(function (x, i, a) { return a.indexOf(x) === i; }), []);
+  });
+
   test("first run: empty state renders with no errors", async function () {
     await boot(null);
     eq(ev("state.contacts.length"), 0);

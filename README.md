@@ -1,102 +1,89 @@
 # Field Notes
 
-A private relationship tracker. 955 contacts preloaded. All data stays in your browser.
+A private tracker for the people you want to keep in your life. It runs as an installable web app, keeps all data on the device, and works offline.
 
-## Deploy to Vercel — the one thing that matters
+The idea behind it: a contact list tells you who you know. Field Notes tells you who is worth reaching out to, because you rated them as having potential to deepen and it has been a while.
 
-Upload the **contents** of this folder, not the folder itself.
+## Using it
 
-Vercel needs `index.html` sitting at the top level of what you upload. If it ends up one folder deeper, you get a blank page or a 404.
+**Add someone.** Add tab, type `Sam Lee at Geography Club`, press Enter. The name is saved, "Met at Geography Club" goes in the notes, and the box is ready for the next person. A name alone is a complete entry. Tier, potential and everything else are optional, one tap each on the card that appears.
 
-### Drag and drop
+**Tiers** are about closeness: Close, Middle, Acquaintance, Networking. New people start as Acquaintance.
 
-1. Unzip. You now have a folder called `pwa`.
-2. **Open** the `pwa` folder so you can see `index.html`, `app.js`, `styles.css`, `icons/`, etc.
-3. Select all of those files and folders (Cmd+A / Ctrl+A).
-4. Go to https://vercel.com/new and drag the **selected files** onto the drop area.
-5. If asked for a framework preset, choose **Other**. Leave build command and output directory empty.
-6. Deploy.
+**Potential to deepen** (Low, Some, Moderate, Strong, Rare) is the rating that drives everything else. Unrated and Low people never appear in any prompt.
 
-### CLI
+**Reach tab.** People you rated who you have not logged in a while, each with a reason ("Last talked 40 days ago · you usually talk every 10 days"). Reminders are for Close and Middle only. Rated Acquaintance and Networking people sit in a folded list at the bottom and never trigger anything. When you open the app, at most one reminder card appears.
 
-```bash
-cd pwa
-npx vercel --prod
+**Log tab.** Tap Log next to someone you talked to. The people you talk to most are listed so you rarely need to search. Skipping days costs nothing.
+
+**Promises.** Open a person and fill in "Something I said I would do". It stays on the Reach tab until you tap Done.
+
+**Tags.** Type a word with `#` in anyone's notes (`#geoclub`, `#hall`). Tiering -> Tag shows each group. To tag many people at once: Select -> tick people -> + Tag.
+
+**Breaks.** Around Thanksgiving, winter break, spring break and summer, the Reach tab lists rated Close and Middle people whose city is not Philadelphia. At the start of a semester it lists rated people you added last term and have not logged. Dates follow the Penn calendar. A prompt with nobody to show does not appear.
+
+**Discreet mode.** Tap the "Field Notes" title to hide tier names and ratings. Tap again to show them.
+
+**Shortcuts.** On Android, long-press the app icon for "Add someone" and "Log a conversation". Links also work: `/?tab=add`, `/?tab=log`, `/?add=Sam+Lee+at+GBM` (fills the line, never saves by itself).
+
+## Your data
+
+- Stored in this browser on this device (`localStorage`). The app ships with no contacts in it.
+- **Back up:** Settings -> Backup -> "Save a full backup" writes a JSON file that restores everything exactly. CSV export is for spreadsheets.
+- **Import:** Settings -> Backup -> choose a CSV, VCF or backup file. One tap adds everyone new as Acquaintance. People already in the app keep their tier.
+- **Updates** keep your data. Before a new version first runs, the app saves a copy of the data as it was; Settings -> About -> "Go back to that copy" restores it.
+- Bulk actions (import, move, tag, delete) all have Undo.
+
+Never commit contact data to this repo. `.gitignore` excludes `*.csv` and backups.
+
+## Updates
+
+Pushing to `main` deploys to Vercel. When the installed app is next opened, it fetches the new version, reloads itself once, and shows "Updated to vX". The version is at the bottom of the Add tab.
+
+Release checklist: bump `APP_VERSION` in `app.js` and `CACHE` in `sw.js`, run the tests, push, run `bash tools/deploy_check.sh <version>`.
+
+## Sync across devices (optional, off by default)
+
+Contacts are encrypted in the browser with a key derived from your passphrase (PBKDF2-SHA256, 250k iterations, AES-GCM) before upload. The server stores ciphertext and a revision number.
+
+**The passphrase cannot be recovered or reset.** If you forget it, the synced copy is unreadable. Local data is not affected.
+
+Setup:
+1. Vercel dashboard -> this project -> Storage -> create an Upstash Redis store and connect it. Redeploy.
+2. Check it: `bash tools/sync_smoke.sh https://<your-site>`.
+3. In the app: Settings -> Sync -> passphrase twice -> Turn on sync.
+4. Second device: same site, paste the sync code, same passphrase, Join.
+
+Without the store, `/api/sync` returns 501 and the app says sync is not configured. Nothing else is affected.
+
+How conflicts resolve: per person, newer edit wins. If both devices edited the same person since the last sync, the other device's notes are appended rather than dropped. Conversation and tier histories are always merged. Deletes use tombstones so they are not undone by the other device.
+
+Limits on the endpoint: 3 MB per upload, 90 requests per address per 5 minutes, 40 writes per sync id per 5 minutes, 6 new sync ids per address per day.
+
+Sync is not a backup. Keep a backup file too.
+
+## Development
+
+No build step and no dependencies.
+
 ```
-
-Answer the prompts with defaults. There is no build step.
-
-## Verify it worked
-
-Open the deployed URL. You should see "Field Notes" with "955 contacts" underneath.
-
-If the page tells you a file could not be loaded, the upload was nested one level too deep — redo the steps above making sure `index.html` is at the root.
-
-## Install on your phone
-
-**iOS (Safari):** open the URL → Share → Add to Home Screen.
-**Android (Chrome):** open the URL → tap Install in the header, or browser menu → Install app.
-
-Launches full screen, works offline.
-
-## Files
-
-```
-index.html      app shell
+index.html      app shell, service worker registration and update handling
+app.js          all app logic
+sync.js         encryption and merge for sync
+api/sync.js     serverless endpoint storing the encrypted blob (CommonJS on purpose)
+sw.js           service worker: offline shell, stale-while-revalidate assets
+data.js         empty seed, by design
 styles.css      all styling
-app.js          application logic
-sync.js         end-to-end encryption + merge for device sync
-api/sync.js     serverless endpoint that stores the encrypted blob
-data.js         empty by design — contacts are imported on-device
-manifest.json   PWA manifest
-sw.js           service worker, offline-first
-vercel.json     cache headers
-icons/          192, 512, maskable, apple-touch, favicon
+tests/          browser test suite (fake people only)
+tools/          dev server, deploy check, sync smoke test
 ```
 
-All paths are relative, so the app also runs from a subfolder or straight off your desktop by opening `index.html`.
+Run the tests:
 
-## Sync across devices (optional)
-
-Sync is **off** until you turn it on, and the app works fully without it.
-
-Contacts are encrypted in the browser with a key derived from your passphrase
-(PBKDF2-SHA256, 250k iterations) before anything is uploaded. The server stores
-an opaque AES-GCM blob and a revision number, so Vercel, the database provider,
-and the author of this code cannot read it. **There is no password reset** —
-lose the passphrase and the synced copy is unrecoverable.
-
-### Turning it on
-
-1. In this project's Vercel dashboard open **Storage** and create an **Upstash
-   Redis** store. Vercel then sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`
-   automatically. (`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` also work.)
-2. Redeploy so the function sees the variables.
-3. In the app: **Add → Sync across devices**, choose a passphrase, **Turn on sync**.
-4. On the second device: same site, **same passphrase**, paste the **sync code**
-   shown on the first device, then **Join that sync**.
-
-Without those variables `/api/sync` returns 501 and the app says sync is not
-configured. Nothing else breaks.
-
-### How conflicts resolve
-
-Edits merge per contact by timestamp rather than overwriting the whole file, so
-changes made on your phone and laptop between syncs both survive. Deletions use
-tombstones, so deleting on one device is not undone by the other still holding a
-copy. Simultaneous writes are caught by a revision check and retried.
-
-Sync is not a backup — export a CSV regularly regardless.
-
-## Data
-
-`localStorage`, per browser and per device. Without sync, phone and laptop keep
-separate copies.
-
-Export CSV from the Add tab to back up or move data between devices. LinkedIn's `Connections.csv` imports directly.
-
-To change the preloaded set, replace `data.js`:
-
-```js
-{ n: "Name", t: "Tier", co: "Company", sc: "School", l: "City", c: "Notes", ph: "Phone", em: "Email" }
 ```
+python tools/serve.py 8780
+```
+
+then open `http://localhost:8780/tests/run.html`. Tests drive the real app in a frame with generated fake people and a separate storage key, and only run on localhost. `tests/`, `tools/` and the `.md` files are not deployed (`.vercelignore`).
+
+Project notes: `AUDIT.md` (how it works, ranked ideas), `DECISIONS.md` (judgement calls and how to reverse them), `PROGRESS.md` (per-release evidence), `CHANGELOG.md`.

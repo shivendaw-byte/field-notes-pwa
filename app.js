@@ -95,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.7";
+  var APP_VERSION = "9.8";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -557,7 +557,7 @@
         step(closeN >= 5, "Put your closest people in Close (" + closeN + " so far)",
              '<button class="btn-ghost sm" data-act="filterclose">Open Close →</button>') +
         step(exported, "Save a backup — your data lives only on this device",
-             '<button class="btn-ghost sm" data-act="export">Export →</button>') +
+             '<button class="btn-ghost sm" data-act="exportjson">Back up →</button>') +
       "</ul></div>";
   }
 
@@ -569,7 +569,7 @@
     return '<div class="card warn rowsplit"><p class="note" style="margin:0">' +
       (last ? "Last backup was " + d + " days ago." : "You have never saved a backup.") +
       (window.FNSync && FNSync.enabled() ? " Sync is on, but a file copy is still worth keeping." : " Your data lives only on this device.") +
-      '</p><button class="btn-ghost" data-act="export">Export</button></div>';
+      '</p><button class="btn-ghost" data-act="exportjson">Back up</button></div>';
   }
 
   /* Highest potential first, unrated last, alphabetical within a level. */
@@ -681,6 +681,17 @@
           ? '<span class="note">No tags yet. Type a word with # in anyone\'s notes, like #geoclub or #hall, ' +
             'or use Select → Tag to tag several people at once.</span>'
           : '<span class="note">No ' + browseBy + ' set on anyone yet — add it on any contact.</span>';
+    }
+
+    if (!state.contacts.length) {
+      return pageHead("tiering", "Welcome", "Field Notes") +
+        '<div class="card start"><h3>Start with one person</h3>' +
+        '<p class="note">Type a name on the Add tab and press Enter. That is all an entry needs. ' +
+        'Tiers, ratings and notes are there when you want them and never required.</p>' +
+        '<div class="field"><button class="btn" data-act="gotoadd">Add someone</button></div>' +
+        '<div class="field"><button class="btn-ghost" data-act="opensettings">Bring in a contacts file or a backup</button></div>' +
+        '<p class="hint">Everything stays on this device. Nothing is uploaded unless you turn on sync, and then only in encrypted form.</p>' +
+        "</div>";
     }
 
     return pageHead("tiering", "Everyone, sorted", "Tiering") +
@@ -1453,7 +1464,7 @@
     var mo = momentum();
     var tags = tagValues().slice(0, 8);
 
-    return '<button class="back" data-act="settings">Back to settings</button>' +
+    return '<button class="btn-ghost sm" data-act="opensettings">← Settings</button>' +
       '<div class="eyebrow">' + esc(now.monthName) + "</div><h2>Trends</h2>" +
       subLine("For noticing patterns. These are not scores, and none of this sees how any of it felt.") +
 
@@ -1566,7 +1577,6 @@
 
     return pageHead("add", "New person", "Add") +
       subLine("Type a name and press Enter. That is a complete entry.") +
-      backupNagHTML() +
       '<div class="card capture"><h3>Just met someone</h3>' +
         '<input type="text" id="qLine" placeholder="Sam Lee at Geography Club" autocomplete="off" ' +
           'autocapitalize="words" enterkeyhint="done" aria-label="Name, and where you met">' +
@@ -1590,6 +1600,7 @@
         "</details>" +
       "</div>" +
       justAddedHTML() +
+      backupNagHTML() +
 
       (!pending.length && !queueHistory.length ? "" :
       '<div class="card"><h3>Sort imported contacts</h3>' +
@@ -1712,6 +1723,20 @@
       tab === "log" ? viewLog() :
       tab === "reconnect" ? viewReconnect() :
       viewAdd();
+
+    /* Give every field an accessible name. Visible labels sit beside the inputs
+       rather than wrapping them, so screen readers would otherwise announce
+       "edit text" for all of them. */
+    var fields = document.getElementById("view").querySelectorAll("input:not([aria-label]), textarea:not([aria-label])");
+    for (var f = 0; f < fields.length; f++) {
+      var fe = fields[f];
+      var lab = fe.previousElementSibling && fe.previousElementSibling.tagName === "LABEL" ? fe.previousElementSibling
+              : fe.parentNode ? fe.parentNode.querySelector("label") : null;
+      var nm = (lab && lab.textContent) || fe.getAttribute("placeholder") || "";
+      if (nm) fe.setAttribute("aria-label", nm.replace(/\s+/g, " ").trim());
+    }
+    var pressed = document.getElementById("view").querySelectorAll(".chip, .filter, .seg button");
+    for (var pz = 0; pz < pressed.length; pz++) pressed[pz].setAttribute("aria-pressed", pressed[pz].classList.contains("on") ? "true" : "false");
 
     var ts = document.getElementById("tierSearch");
     if (ts && tab === "tiering") {
@@ -1875,7 +1900,7 @@
       case "showsub": state.settings.showSub = val; commit(); break;
       case "resort": orderSnapshot = null; render(); toast("Re-sorted by potential"); break;
       case "toggleall": searchAll = !searchAll; orderSnapshot = null; render(); break;
-      case "gotoadd": tab = "add"; render(); break;
+      case "gotoadd": tab = "add"; render(); focusCapture(); break;
       case "dismissonboard": state.settings.onboarded = true; commit(); break;
 
       case "settier":

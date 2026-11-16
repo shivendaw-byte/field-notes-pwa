@@ -1,5 +1,5 @@
 /* Field Notes service worker — offline-first app shell */
-var CACHE = 'field-notes-v26';
+var CACHE = 'field-notes-v27';
 var ASSETS = [
   './', './index.html', './styles.css', './app.js', './data.js',
   './sync.js', './manifest.json', './icons/icon-192.png', './icons/icon-512.png',
