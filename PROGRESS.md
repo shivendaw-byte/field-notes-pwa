@@ -39,3 +39,9 @@ One entry per release. Newest last.
   - v9.3 installed -> v9.8 files swapped in -> one reopen: the app reloaded itself, showed "Updated to v9.8", data identical, rollback copy of all 955 kept, old cache removed.
   - v9.7 installed -> v9.8 swapped in -> app resumed without a page load (as an installed app does): same result.
 - Never-homework review: nothing new is required anywhere. Capture needs a name only. Promises, tags, tier and potential are optional. Break prompts and the "further out" list appear only when they have someone to show and never raise the reminder card. The only recurring ask left is the 30-day backup reminder, kept on purpose because the data lives on one device (it no longer sits above the capture box).
+- Deploy v9.8: commit `a159b91`. Both production sites confirmed on `APP_VERSION 9.8`, cache `field-notes-v27`; every deployed file matches the repo byte for byte.
+
+## Where things stand
+- Live version: **9.8** on https://field-notes-two-blond.vercel.app and https://field-notes-pwa-gules.vercel.app.
+- On your phone: open the app once. It reloads itself and shows "Updated to v9.8". Check the bottom of the Add tab.
+- Open: real Upstash sync test (DECISIONS.md 11). Suggested: delete the Vercel project you do not use (DECISIONS.md 1).
