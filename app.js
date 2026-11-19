@@ -95,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.11";
+  var APP_VERSION = "9.12";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -124,6 +124,7 @@
   var qPenn = null;           // Penn toggle on the Add card; null = use the remembered default
   var qFamily = false;        // Family toggle on the Add card; resets after each save
   var lastMark = null;        // undo for Select -> + Penn / + Family
+  var lastQueued = null;      // undo for "Sort one by one"
   var pennOnly = false;       // "Penn only" filter on the contact lists
   var lastAdded = null;       // id of the person just captured, for the follow-up card
   var dupeOk = "";            // name the user confirmed adding twice
@@ -395,6 +396,11 @@
     return d === undefined ? true : !!d;
   }
   function qPennOn() { return qPenn === null ? capturePennDefault() : qPenn; }
+  /* "Save as Penn" in the sort queue: on unless you turned it off. */
+  function sortPennOn() {
+    var d = state && state.settings ? state.settings.sortPenn : undefined;
+    return d === undefined ? true : !!d;
+  }
 
   function haystack(c) {
     // Notes are searched whole, so chip text is found by ordinary search.
@@ -561,12 +567,13 @@
             return '<button class="chip' + (c.tier === t ? " on" : "") + '" data-t="' + t + '" data-act="settier" data-id="' + c.id + '" data-val="' + t + '">' + t + "</button>";
           }).join("") +
         "</div></div>" +
+        // Right under the tier, so tier + Penn are two taps at the top of the row.
+        pennChipHTML(c) +
         '<div class="field"><label class="f">Potential to deepen</label><div class="chips">' +
           POTENTIAL.map(function (p) {
             return '<button class="chip' + (c.potential === p.key ? " on" : "") + '" data-p="1" data-act="setpot" data-id="' + c.id + '" data-val="' + p.key + '" title="' + p.blurb + '">' + p.key + "</button>";
           }).join("") +
         "</div></div>" +
-        pennChipHTML(c) +
         '<div class="field"><label class="f">Name</label>' +
           '<input type="text" value="' + esc(c.name) + '" data-act="setname" data-id="' + c.id + '" placeholder="Their name"></div>' +
         '<div class="field grid2">' +
@@ -856,6 +863,9 @@
                   : (tierQuery ? "Nothing here matches “" + esc(tierQuery) + "”." : "No one in " + esc(heading) + " yet.")) +
             "</div>") +
       "</div>" +
+      (tierFilter === "Imported" && browseBy === "tier" && !selectMode && justImported().length
+        ? '<div class="field"><button class="btn" data-act="sortimported">Sort these ' + justImported().length +
+          " one by one</button></div>" : "") +
       (pennOnly && !list.length && !tierQuery && baseAll.length
         ? '<p class="hint" style="text-align:center">Nobody in ' + esc(heading) + ' is marked as Penn. ' +
           'Tap Penn only to see everyone.</p>' : "") +
@@ -865,7 +875,8 @@
               return '<button class="chip" data-t="' + t + '" data-act="selmove" data-val="' + t + '">' + tierLabel(t) + "</button>";
             }).join("") + '<button class="chip" data-act="seltag">+ Tag</button>' +
               '<button class="chip pennchip" data-act="selmark" data-val="penn">+ Penn</button>' +
-              '<button class="chip famchip" data-act="selmark" data-val="family">+ Family</button>' + "</div></div>"
+              '<button class="chip famchip" data-act="selmark" data-val="family">+ Family</button>' +
+              '<button class="chip" data-act="selsort">Sort one by one</button>' + "</div></div>"
         : "");
   }
 
@@ -1601,6 +1612,7 @@
           "Nobody is added twice.</p>" +
         (splitPenn
           ? '<div class="field"><button class="btn" data-act="pvquickpenn">Add the ' + pennNew + " Penn " + (pennNew === 1 ? "person" : "people") + "</button></div>" +
+            '<div class="field"><button class="btn-ghost" data-act="pvsortpenn">Add the ' + pennNew + " Penn " + (pennNew === 1 ? "person" : "people") + " and sort them one by one</button></div>" +
             '<div class="field"><button class="btn-ghost" data-act="pvquick">Add all ' + newRows.length + " new people</button></div>"
           : newRows.length
             ? '<div class="field"><button class="btn" data-act="pvquick">Add ' + newRows.length + (keepN ? " \u2014 " + (newRows.length - keepN) + " as Acquaintance" : " as Acquaintance") + "</button></div>"
@@ -1914,8 +1926,7 @@
     if (queueIndex >= pending.length) queueIndex = Math.max(0, pending.length - 1);
     var cur = pending[queueIndex];
 
-    return pageHead("add", "New person", "Add") +
-      subLine("Type a name and press Enter. That is a complete entry.") +
+    var captureCard =
       '<div class="card capture"><h3>Just met someone</h3>' +
         '<input type="text" id="qLine" placeholder="Sam Lee at Geography Club" autocomplete="off" ' +
           'autocapitalize="words" enterkeyhint="done" aria-label="Name, and where you met">' +
@@ -1944,17 +1955,38 @@
         "</details>" +
       "</div>" +
       justAddedHTML() +
-      backupNagHTML() +
+      backupNagHTML();
 
-      (!pending.length && !queueHistory.length ? "" :
-      '<div class="card"><h3>Sort imported contacts</h3>' +
+    var sortCard = (!pending.length && !queueHistory.length ? "" :
+      '<div class="card sortcard"><h3>Sort imported contacts</h3>' +
         (!pending.length
           ? '<p class="ok">All caught up — nothing waiting.</p>' +
             (queueHistory.length ? '<div class="field"><button class="btn-ghost" data-act="queueback">← Undo last sort</button></div>' : "")
+          /* Everything needed to sort someone sits under their name: the Penn
+             setting (stays on from person to person), Family, and the tier
+             buttons that save and move on. Details are folded below. */
           : '<span class="queue-pos">' + (queueIndex + 1) + " of " + pending.length + "</span>" +
-            '<div class="queue-name">' + esc(cur.name) + "</div>" +
+            '<div class="queue-name">' + esc(cur.name) +
+              (isFamily(cur) ? ' <span class="tag fam">Family</span>' : "") +
+              (isPenn(cur) ? ' <span class="tag pn">Penn</span>' : "") + "</div>" +
             (cur.notes ? '<p class="note">' + esc(cur.notes) + "</p>" : "") +
-            pennChipHTML(cur) +
+            '<div class="field caprow">' +
+              '<button class="chip pennchip' + (sortPennOn() ? " on" : "") + '" id="sortPenn" data-act="sortpenn">' +
+                (sortPennOn() ? "✓ Save as Penn" : "Save as Penn") + "</button>" +
+              '<button class="chip famchip' + (isFamily(cur) ? " on" : "") + '" data-act="togglefamily" data-id="' + cur.id + '">' +
+                (isFamily(cur) ? "✓ Family" : "Family") + "</button>" +
+            "</div>" +
+            '<p class="hint" style="margin:6px 0 0">' + (sortPennOn()
+              ? "Everyone you save here gets School: Penn. Stays on until you turn it off."
+              : "Off. Each person keeps whatever Penn they already have.") + "</p>" +
+            '<div class="field"><label class="f">Save as — one tap saves and shows the next person</label><div class="chips">' +
+              TIERS.map(function (t) { return '<button class="chip" data-t="' + t + '" data-act="queuetier" data-val="' + t + '">' + t + "</button>"; }).join("") +
+            "</div></div>" +
+            '<div class="queue-nav">' +
+              '<button class="btn-ghost" data-act="queueback"' + (queueHistory.length || queueIndex ? "" : " disabled") + '>← Back</button>' +
+              '<button class="btn-ghost" data-act="queueskip">Skip →</button>' +
+            "</div>" +
+            '<details class="more"><summary>Edit details</summary>' +
             '<div class="field grid2">' +
               '<div><label class="f">Company</label><input type="text" value="' + esc(cur.company) + '" data-act="setco" data-id="' + cur.id + '" placeholder="Optional"></div>' +
               '<div><label class="f">School</label><input type="text" value="' + esc(cur.school) + '" data-act="setsc" data-id="' + cur.id + '" placeholder="Optional"></div>' +
@@ -1967,15 +1999,16 @@
               '<div><label class="f">City</label><input type="text" value="' + esc(cur.location) + '" data-act="setloc" data-id="' + cur.id + '" placeholder="Optional"></div>' +
               '<div><label class="f">Notes</label><input type="text" value="' + esc(cur.notes) + '" data-act="setnotes" data-id="' + cur.id + '" placeholder="Optional"></div>' +
             "</div>" +
-            '<div class="field"><label class="f">Tier — tapping saves and advances</label><div class="chips">' +
-              TIERS.map(function (t) { return '<button class="chip" data-t="' + t + '" data-act="queuetier" data-val="' + t + '">' + t + "</button>"; }).join("") +
-            "</div></div>" +
-            '<div class="queue-nav">' +
-              '<button class="btn-ghost" data-act="queueback"' + (queueHistory.length || queueIndex ? "" : " disabled") + '>← Back</button>' +
-              '<button class="btn-ghost" data-act="queueskip">Skip →</button>' +
-            "</div>" +
-            '<div class="field"><button class="btn-danger" data-act="queuedelete" data-id="' + cur.id + '">Delete this contact</button></div>') +
-      "</div>") +
+            '<div class="field"><button class="btn-danger" data-act="queuedelete" data-id="' + cur.id + '">Delete this contact</button></div>' +
+            "</details>") +
+      "</div>");
+
+    /* While people are waiting to be sorted, their card comes first so the
+       Save as Penn and tier buttons are at the top of the screen. */
+    return pageHead("add", "New person", "Add") +
+      (pending.length
+        ? sortCard + captureCard
+        : subLine("Type a name and press Enter. That is a complete entry.") + captureCard + sortCard) +
 
       /* Import, backup and sync live in Settings so this tab stays about one
          thing: getting a person into the app. */
@@ -2399,10 +2432,37 @@
         var p = state.contacts.filter(function (x) { return x.pending; });
         var person = p[queueIndex];
         if (person) {
-          queueHistory.push({ id: person.id, tier: person.tier });
+          queueHistory.push({ id: person.id, tier: person.tier, school: person.school, penn: person.penn, hadPenn: "penn" in person });
+          if (sortPennOn()) setPenn(person, true);
           person.tier = val; person.pending = false; touch(person);
           commit();
         }
+        break;
+      }
+      case "sortpenn":
+        // A setting, not a per-person tick: it stays as you leave it.
+        state.settings.sortPenn = !sortPennOn();
+        commit();
+        break;
+      case "selsort":
+      case "sortimported": {
+        var sendIds = act === "selsort" ? Object.keys(selected) : justImported().map(function (x) { return x.id; });
+        if (!sendIds.length) break;
+        lastQueued = sendIds.filter(function (qid) { var qc = byId(qid); return qc && !qc.pending; });
+        lastQueued.forEach(function (qid) { var qc = byId(qid); qc.pending = true; touch(qc); });
+        selected = {}; selectMode = false;
+        queueIndex = 0; queueHistory = [];
+        tab = "add"; openId = null; orderSnapshot = null;
+        commit();
+        toast(lastQueued.length + " waiting to be sorted", "Undo", "undoqueue");
+        break;
+      }
+      case "undoqueue": {
+        if (!lastQueued) { toast("Nothing to undo"); break; }
+        lastQueued.forEach(function (qid) { var qc = byId(qid); if (qc && qc.pending) { qc.pending = false; touch(qc); } });
+        var nq = lastQueued.length; lastQueued = null;
+        commit();
+        toast("Took " + nq + " back out of the sort queue");
         break;
       }
       case "queueskip": {
@@ -2416,7 +2476,12 @@
           var last = queueHistory.pop();
           var back = byId(last.id);
           if (back) {
-            back.pending = true; back.tier = last.tier; touch(back);
+            back.pending = true; back.tier = last.tier;
+            if ("school" in last) {
+              back.school = last.school;
+              if (last.hadPenn) back.penn = last.penn; else delete back.penn;
+            }
+            touch(back);
             commitQuiet();
             var list = state.contacts.filter(function (x) { return x.pending; });
             for (var k = 0; k < list.length; k++) if (list[k].id === back.id) queueIndex = k;
@@ -2442,6 +2507,7 @@
       case "pvconfirm": applyImport(false); break;
       case "pvquick": applyImport(true); break;
       case "pvquickpenn": applyImport(true, true); break;
+      case "pvsortpenn": applyImport(true, true, true); break;
       case "mergegroup": {
         var gids = (val || "").split(",");
         var grp = dupeGroups().filter(function (g) { return g.some(function (x) { return gids.indexOf(x.id) !== -1; }); });
@@ -2750,6 +2816,8 @@
 
   function focusCapture() {
     if (tab !== "add" || importPreview || cleanup) return;
+    // Sorting: no keyboard popping up over the sort card.
+    if (state.contacts.some(function (c) { return c.pending; })) return;
     var el = document.getElementById("qLine");
     if (el) el.focus();
   }
@@ -2985,7 +3053,7 @@
     reader.readAsText(f);
   }
 
-  function applyImport(quick, onlyPenn) {
+  function applyImport(quick, onlyPenn, toQueue) {
     var P = importPreview, added = 0, updated = 0, skipped = 0, left = 0;
     if (quick) { P.defaultTier = "Acquaintance"; P.groups = {}; }
     var batch = "imp-" + uid(), addedIds = [], filled = [];
@@ -3007,6 +3075,7 @@
       delete c._phones; delete c._emails;
       // Any sign of Penn on a new person is saved as School: Penn.
       if (c.penn !== false && isPenn(c)) setPenn(c, true);
+      if (toQueue) c.pending = true;   // straight into the sort queue on the Add tab
       c.importBatchId = batch;
       c.importedAt = today();
       touch(c);
@@ -3018,6 +3087,7 @@
     queueHistory = []; queueIndex = 0;
     if (added) state.settings.lastImport = batch;
     lastImport = (added || filled.length) ? { batch: batch, ids: addedIds, filled: filled } : null;
+    if (toQueue && added) { tab = "add"; openId = null; cleanup = null; }
     commit();
     toast("Added " + added + (updated ? ", filled in " + updated : "") + (left ? ", left out " + left + " not from Penn" : ""),
           lastImport ? "Undo" : null, "undoimport");

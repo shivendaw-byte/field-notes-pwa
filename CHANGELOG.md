@@ -1,5 +1,13 @@
 # Changelog
 
+## 9.12 — 2026-11-19 — faster sorting
+- Sort queue: "Save as Penn" is a setting that stays on from person to person (and after closing the app) until you turn it off. Each person you save gets School: Penn.
+- Sort queue: the tier buttons ("Save as") sit right under the name, next to Save as Penn and Family. One tap saves and shows the next person. Company, school, phone and the rest are folded under "Edit details".
+- While people are waiting to be sorted, the sort card is first on the Add tab and the keyboard does not open.
+- New ways into the sort queue: "Sort these one by one" on the Just imported list, Select -> "Sort one by one", and "Add the Penn people and sort them one by one" on the import screen. Each has Undo.
+- Back in the sort queue also undoes the Penn it saved.
+- Open contact: From Penn and Family moved up, right under the tier buttons.
+
 ## 9.11 — 2026-11-19
 - Clearer Penn line under the From Penn button ("Saved in School as Penn.").
 

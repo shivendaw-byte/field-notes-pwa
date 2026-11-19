@@ -964,22 +964,121 @@
 
   /* ================= sort queue and Family (v9.10) ================= */
 
-  test("sort queue: Penn and Family can be set on each imported person before picking a tier", async function () {
+  function queueState(n) {
     var s = FNFake.makeState(0, 1);
-    for (var i = 0; i < 3; i++) s.contacts.push(Object.assign(FNFake.makeContacts(1, 300 + i)[0], { id: "q" + i, name: "Queue Person " + i, pending: true, school: "", company: "", email: "" }));
-    await boot(s, { ver: "x" });
+    for (var i = 0; i < n; i++) s.contacts.push(Object.assign(FNFake.makeContacts(1, 300 + i)[0], { id: "q" + i, name: "Queue Person " + i, pending: true, school: "", company: "", email: "", notes: "" }));
+    return s;
+  }
+  function byName(n) { return ev("state.contacts.filter(function (x) { return x.name === " + JSON.stringify(n) + "; })[0]"); }
+
+  test("sort queue: Save as Penn stays on from person to person; one tap on a tier saves and moves on", async function () {
+    await boot(queueState(4), { ver: "x" });
     T.click('.tab[data-tab="add"]');
-    assert(/Sort imported contacts/.test(T.text()));
-    var first = T.$(".queue-name").innerText;
-    T.click('.card [data-act="togglepenn"]');
-    T.click('.card [data-act="togglefamily"]');
-    var c = ev("state.contacts.filter(function (x) { return x.name === " + JSON.stringify(first) + "; })[0]");
-    eq([c.school, c.family, c.pending], ["Penn", true, true], "marks should save without leaving the queue");
-    eq(T.$(".queue-name").innerText, first, "the queue should stay on the same person");
+    assert(T.$("#sortPenn").classList.contains("on"), "Save as Penn should start on");
+    var a = T.$(".queue-name").innerText;
     T.click('[data-act="queuetier"][data-val="Middle"]');
-    c = ev("state.contacts.filter(function (x) { return x.name === " + JSON.stringify(first) + "; })[0]");
-    eq([c.tier, c.pending, c.school, c.family], ["Middle", false, "Penn", true]);
-    assert(T.$(".queue-name").innerText !== first, "should move to the next person");
+    eq([byName(a).tier, byName(a).pending, byName(a).school], ["Middle", false, "Penn"]);
+    var b = T.$(".queue-name").innerText;
+    assert(b !== a, "should move to the next person");
+    assert(T.$("#sortPenn").classList.contains("on"), "Save as Penn unchecked itself on the next person");
+    T.click('[data-act="queuetier"][data-val="Acquaintance"]');
+    eq(byName(b).school, "Penn");
+    // turning it off is remembered, including after reopening
+    T.click("#sortPenn");
+    eq(ev("state.settings.sortPenn"), false);
+    await boot(null, { keep: true });
+    T.click('.tab[data-tab="add"]');
+    assert(!T.$("#sortPenn").classList.contains("on"), "the off choice was not remembered");
+    var c = T.$(".queue-name").innerText;
+    T.click('[data-act="queuetier"][data-val="Close"]');
+    eq([byName(c).tier, byName(c).school], ["Close", ""]);
+    // Back puts the person back exactly as they were
+    T.click('[data-act="queueback"]');
+    eq([byName(c).pending, byName(c).school], [true, ""]);
+  });
+
+  test("sort queue: while people are waiting, the sort card is first on the Add tab and no keyboard opens", async function () {
+    await boot(queueState(2), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    var cards = T.$$("#view .card");
+    assert(cards[0].classList.contains("sortcard"), "sort card should be first");
+    assert(T.app().document.activeElement.id !== "qLine", "the name box grabbed focus");
+    T.click('[data-act="queuetier"][data-val="Middle"]');
+    T.click('[data-act="queuetier"][data-val="Middle"]');
+    T.click('.tab[data-tab="tiering"]'); T.click('.tab[data-tab="add"]');
+    assert(T.$$("#view .card")[0].classList.contains("capture"), "with nothing waiting, capture should be first again");
+    eq(T.app().document.activeElement.id, "qLine");
+  });
+
+  test("sort queue: Back after a Penn save restores the empty School", async function () {
+    await boot(queueState(2), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    var a = T.$(".queue-name").innerText;
+    T.click('[data-act="queuetier"][data-val="Middle"]');
+    eq(byName(a).school, "Penn");
+    T.click('[data-act="queueback"]');
+    var back = byName(a);
+    eq([back.pending, back.school, back.tier, "penn" in back], [true, "", "Acquaintance", false]);
+  });
+
+  test("sort queue: tier buttons, Penn and Family sit above the details; Family is per person", async function () {
+    await boot(queueState(3), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    var card = T.$(".queue-name").closest(".card");
+    var html = card.innerHTML;
+    assert(html.indexOf('data-act="sortpenn"') < html.indexOf('data-act="queuetier"'), "Penn should come before the tiers");
+    assert(html.indexOf('data-act="queuetier"') < html.indexOf('data-act="setco"'), "tiers should come before the details");
+    assert(card.querySelector("details.more [data-act='setco']"), "details should be folded");
+    var top = card.querySelector('[data-act="queuetier"]').getBoundingClientRect().top - card.getBoundingClientRect().top;
+    assert(top < 260, "tier buttons are " + Math.round(top) + "px down the card");
+    var a = T.$(".queue-name").innerText;
+    T.click('.card [data-act="togglefamily"]');
+    eq([byName(a).family, byName(a).pending], [true, true], "Family should save without leaving the person");
+    eq(T.$(".queue-name").innerText.indexOf(a), 0, "should still be the same person");
+    assert(T.$(".queue-name .tag.fam"), "Family badge should show next to the name");
+    T.click('[data-act="queuetier"][data-val="Close"]');
+    assert(!T.$('.card [data-act="togglefamily"]').classList.contains("on"), "Family carried over to the next person");
+  });
+
+  test("Sort one by one: from Just imported or from Select, into the queue, with undo", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 5; i++) s.contacts.push(Object.assign(FNFake.makeContacts(1, 600 + i)[0], { id: "j" + i, name: "Imported Person " + i, tier: "Acquaintance", importBatchId: "b1", school: "", notes: "" }));
+    s.settings.lastImport = "b1";
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Imported"]');
+    T.click('[data-act="sortimported"]');
+    eq(ev("tab"), "add");
+    eq(ev("state.contacts.filter(function (c) { return c.pending; }).length"), 5);
+    assert(/1 of 5/.test(T.$(".queue-pos").innerText));
+    T.click('[data-act="undoqueue"]');
+    eq(ev("state.contacts.filter(function (c) { return c.pending; }).length"), 0);
+    T.click('.tab[data-tab="tiering"]');
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    T.click('[data-act="selmode"]');
+    ["j1", "j3"].forEach(function (id) { T.click('[data-act="selpick"][data-id="' + id + '"]'); });
+    T.click('[data-act="selsort"]');
+    eq(ev("state.contacts.filter(function (c) { return c.pending; }).map(function (c) { return c.id; }).sort()"), ["j1", "j3"]);
+  });
+
+  test("contacts file: 'Add the Penn people and sort them one by one' lands them in the queue", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    await importFile(fakeVcf(), "c.vcf");
+    T.click('[data-act="pvsortpenn"]');
+    eq(ev("tab"), "add");
+    eq(ev("state.contacts.filter(function (c) { return c.pending; }).length"), 3);
+    eq(ev("state.contacts.filter(function (c) { return c.pending && c.school === 'Penn'; }).length"), 3);
+    assert(/1 of 3/.test(T.$(".queue-pos").innerText));
+  });
+
+  test("open row: Penn and Family sit right under the tier buttons", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 650)[0], { id: "r1", tier: "Middle" }));
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Middle"]');
+    T.click('.row-head[data-id="r1"]');
+    var h = T.$(".row-body").innerHTML;
+    assert(h.indexOf('data-act="settier"') < h.indexOf('data-act="togglepenn"') && h.indexOf('data-act="togglepenn"') < h.indexOf('data-act="setpot"'),
+      "order should be tier, Penn/Family, potential");
   });
 
   test("Family: one tap on a person, its own list across tiers, a badge, and search", async function () {

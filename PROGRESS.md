@@ -36,7 +36,7 @@ One entry per release. Newest last.
 - Shipped: first-run "Start with one person" card; phone, email and passphrase boxes full height; Call and Email as proper buttons; accessible names on every input and pressed state on chips; backup reminder moved below the capture box and now saves a full backup; fixed the dead "Back to settings" button on Trends; README rewritten; CHANGELOG added.
 - Tests: 51 of 51 pass, including new first-run and accessibility checks (every field named, every control at least 40px tall).
 - Update path, tested for real with a service worker on a local server and 955 fake people:
-  - v9.3 installed -> v9.8 files swapped in -> one reopen: the app reloaded itself, showed "Updated to v9.11", data identical, rollback copy of all 955 kept, old cache removed.
+  - v9.3 installed -> v9.8 files swapped in -> one reopen: the app reloaded itself, showed "Updated to v9.12", data identical, rollback copy of all 955 kept, old cache removed.
   - v9.7 installed -> v9.8 swapped in -> app resumed without a page load (as an installed app does): same result.
 - Never-homework review: nothing new is required anywhere. Capture needs a name only. Promises, tags, tier and potential are optional. Break prompts and the "further out" list appear only when they have someone to show and never raise the reminder card. The only recurring ask left is the 30-day backup reminder, kept on purpose because the data lives on one device (it no longer sits above the capture box).
 - Deploy v9.8: commit `a159b91`. Both production sites confirmed on `APP_VERSION 9.8`, cache `field-notes-v27`; every deployed file matches the repo byte for byte.
@@ -55,7 +55,11 @@ One entry per release. Newest last.
 - Deploy v9.10: commit `326a1e3`, both production sites confirmed, live app.js matches the repo. v9.11 follows with a one-line wording fix.
 - Placements for people already in the app come from the August list. Tiers you changed on your phone since then are not in this file, and importing it never changes a tier in the app.
 
+## v9.12 — faster sorting (2026-11-19)
+- Shipped: sticky "Save as Penn" in the sort queue (default on, remembered); tier buttons, Penn and Family at the top of the sort card with details folded; sort card first on the Add tab while anyone is waiting, no keyboard; "Sort these one by one" (Just imported), Select -> "Sort one by one", and "Add the Penn people and sort them one by one" (import), all with undo; Back restores the School it set; Penn and Family moved under the tier buttons in the open row.
+- Tests: 80 of 80 pass.
+
 ## Where things stand
-- Live version: **9.11** on https://field-notes-two-blond.vercel.app and https://field-notes-pwa-gules.vercel.app.
-- On your phone: open the app once. It reloads itself and shows "Updated to v9.11". Check the bottom of the Add tab.
+- Live version: **9.12** on https://field-notes-two-blond.vercel.app and https://field-notes-pwa-gules.vercel.app.
+- On your phone: open the app once. It reloads itself and shows "Updated to v9.12". Check the bottom of the Add tab.
 - Open: real Upstash sync test (DECISIONS.md 11). Suggested: delete the Vercel project you do not use (DECISIONS.md 1).
