@@ -95,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.8";
+  var APP_VERSION = "9.9";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -121,6 +121,8 @@
   var queueIndex = 0, queueHistory = [];
   var qDraft = { tier: "Acquaintance", potential: "" };
   var qOpen = false;          // "More details" on the Add tab
+  var qPenn = null;           // Penn toggle on the Add card; null = use the remembered default
+  var pennOnly = false;       // "Penn only" filter on the contact lists
   var lastAdded = null;       // id of the person just captured, for the follow-up card
   var dupeOk = "";            // name the user confirmed adding twice
   var LIST_STEP = 150;
@@ -130,7 +132,7 @@
   var importPreview = null;
   var lastImport = null;              // { batch, ids } for the undo toast
   var selectMode = false, selected = {}, lastMove = null;
-  var lastTagged = null, lastFollow = null;
+  var lastTagged = null, lastFollow = null, lastMerge = null;
   var syncBusy = false, syncMsg = "", syncTimer = null, syncBad = false;
 
   function uid() {
@@ -308,9 +310,51 @@
     }
     return false;
   }
+  /* ---------- Penn ----------
+     Worked out from the company or school already saved, so 900 imported
+     contacts are labelled without anyone touching them. `c.penn` exists only
+     when you overrode that: true = from Penn, false = not. Nothing is written
+     for people the detection already gets right. */
+  var PENN_RE = /(^|[^a-z])(u\.?\s?penn|penn|univ(\.|ersity)?\s+of\s+pennsylvania|wharton|perelman)([^a-z]|$)/i;
+  var NOT_PENN_RE = new RegExp([
+    "penn\\s*state", "pennsylvania state", "\\bpsu\\b", "indiana university of pennsylvania", "\\biup\\b",
+    "penn\\s*mutual", "penn\\s*dot", "penn national", "penn hills", "penn manor", "penn foster", "penn highlands",
+    "penn west", "penn college", "pennsylvania college of technology", "penn station", "penn entertainment",
+    "west penn", "penn yan", "penn treaty", "penn charter", "penn wood", "penn view", "penn valley",
+    "penn township", "penn'?s landing", "penn[- ]trafford", "penn cambria", "penn ridge", "pennridge",
+    "penncrest", "penn tech", "wharton (county|junior|high|middle|elementary|isd|independent)",
+    "wharton,? (tx|texas|nj|new jersey|oh|ohio)"
+  ].join("|"), "i");
+  function pennText(v) { return !!v && PENN_RE.test(v) && !NOT_PENN_RE.test(v); }
+  /* Any upenn.edu address: sas., wharton., seas., engineering., nursing. ... */
+  var PENN_MAIL_RE = /@([a-z0-9-]+\.)*upenn\.(edu|com)$/i;
+  function pennMail(v) { return !!v && PENN_MAIL_RE.test(String(v).trim()); }
+  function detectPenn(c) { return pennText(c.school) || pennText(c.company) || pennMail(c.email); }
+  function isPenn(c) { return c.penn === true || (c.penn !== false && detectPenn(c)); }
+  function pennWhy(c) {
+    if (c.penn === true) return "Marked by you.";
+    if (c.penn === false) return "Marked not Penn by you" + (detectPenn(c) ? ", although the " + (pennText(c.school) ? "school" : pennText(c.company) ? "company" : "email") + " looks like Penn." : ".");
+    if (pennText(c.company)) return "Worked out from the company: " + c.company + ".";
+    if (pennText(c.school)) return "Worked out from the school: " + c.school + ".";
+    if (pennMail(c.email)) return "Worked out from the Penn email address.";
+    return "Nothing saved says Penn.";
+  }
+  /* One tap flips it. If the new answer matches what the company or school
+     already says, the override is dropped so the record stays clean. */
+  function togglePenn(c) {
+    var want = !isPenn(c);
+    if (want === detectPenn(c)) delete c.penn; else c.penn = want;
+    touch(c);
+  }
+  function capturePennDefault() {
+    var d = state && state.settings ? state.settings.capturePenn : undefined;
+    return d === undefined ? true : !!d;
+  }
+  function qPennOn() { return qPenn === null ? capturePennDefault() : qPenn; }
+
   function haystack(c) {
     // Notes are searched whole, so chip text is found by ordinary search.
-    return [c.name, c.company, c.school, c.location, c.potential, c.notes, c.tier]
+    return [c.name, c.company, c.school, c.location, c.potential, c.notes, c.tier, isPenn(c) ? "Penn" : ""]
       .filter(Boolean).join(" ");
   }
   function searchContacts(list, q) {
@@ -451,8 +495,11 @@
           '<span class="row-meta">' +
             '<span class="row-name">' + (esc(c.name) || "Unnamed") + "</span>" +
             tierBadge(c.tier) +
-            (c.company ? '<span class="tag co">' + esc(c.company) + "</span>" : "") +
-            (c.school ? '<span class="tag sc">' + esc(c.school) + "</span>" : "") +
+            /* "University of Pennsylvania" in the company becomes one short
+               Penn badge; the full text is still in the open row. */
+            (isPenn(c) ? '<span class="tag pn">Penn</span>' : "") +
+            (c.company && !(isPenn(c) && pennText(c.company)) ? '<span class="tag co">' + esc(c.company) + "</span>" : "") +
+            (c.school && !(isPenn(c) && pennText(c.school)) ? '<span class="tag sc">' + esc(c.school) + "</span>" : "") +
             tagsOf(c).slice(0, 2).map(function (t) { return '<span class="tag tg">' + esc(t) + "</span>"; }).join("") +
             potMeter(c.potential) +
           "</span>" +
@@ -474,6 +521,7 @@
             return '<button class="chip' + (c.potential === p.key ? " on" : "") + '" data-p="1" data-act="setpot" data-id="' + c.id + '" data-val="' + p.key + '" title="' + p.blurb + '">' + p.key + "</button>";
           }).join("") +
         "</div></div>" +
+        pennChipHTML(c) +
         '<div class="field"><label class="f">Name</label>' +
           '<input type="text" value="' + esc(c.name) + '" data-act="setname" data-id="' + c.id + '" placeholder="Their name"></div>' +
         '<div class="field grid2">' +
@@ -504,6 +552,14 @@
         historyHTML(c) +
         '<div class="field"><button class="btn-danger" data-act="delete" data-id="' + c.id + '">Delete contact</button></div>' +
       "</div>") + "</div>";
+  }
+
+  function pennChipHTML(c) {
+    var on = isPenn(c);
+    return '<div class="field"><label class="f">Penn</label><div class="chips">' +
+      '<button class="chip pennchip' + (on ? " on" : "") + '" data-act="togglepenn" data-id="' + c.id + '">' +
+        (on ? "\u2713 From Penn" : "From Penn") + "</button></div>" +
+      '<p class="hint" style="margin:6px 0 0">' + esc(pennWhy(c)) + "</p></div>";
   }
 
   /* ============================================================
@@ -639,6 +695,10 @@
       heading = groupFilter || "";
     }
 
+    var baseAll = base;
+    if (pennOnly) base = base.filter(isPenn);
+    var pennHere = pennOnly ? base.length : baseAll.filter(isPenn).length;
+
     /* Rank the whole tier first, then filter by search, so searching never
        reshuffles anyone. The ranking is frozen while you work (see rankList). */
     var list = searchContacts(rankList(base), tierQuery);
@@ -717,10 +777,12 @@
             (searchAll ? " across everyone" : heading ? " in " + esc(heading) : "") + "</p>" +
             '<button class="btn-ghost sm" data-act="toggleall">' + (searchAll ? "Search this tier only" : "Search everyone") + "</button></div>"
         : "") +
-      (list.length
+      (baseAll.length
         ? '<div class="rowsplit selbar-top"><p class="hint" style="margin:0">' +
-            (selectMode ? Object.keys(selected).length + " selected" : list.length + " here") + "</p>" +
+            (selectMode ? Object.keys(selected).length + " selected" : list.length + (pennOnly ? " from Penn" : " here")) + "</p>" +
             '<span style="display:flex;gap:8px">' +
+              '<button class="btn-ghost sm pennf' + (pennOnly ? " on" : "") + '" data-act="pennonly">' +
+                (pennOnly ? "\u2713 Penn only" : "Penn only") + ' <span class="n">' + pennHere + "</span></button>" +
               (selectMode ? '<button class="btn-ghost sm" data-act="selall" data-ids="' + list.map(function (c) { return c.id; }).join(",") + '">All / none</button>' : "") +
               '<button class="btn-ghost sm" data-act="selmode">' + (selectMode ? "Cancel" : "Select") + "</button>" +
             "</span></div>"
@@ -738,6 +800,9 @@
                   : (tierQuery ? "Nothing here matches “" + esc(tierQuery) + "”." : "No one in " + esc(heading) + " yet.")) +
             "</div>") +
       "</div>" +
+      (pennOnly && !list.length && !tierQuery && baseAll.length
+        ? '<p class="hint" style="text-align:center">Nobody in ' + esc(heading) + ' is marked as Penn. ' +
+          'Tap Penn only to see everyone.</p>' : "") +
       (selectMode && Object.keys(selected).length
         ? '<div class="cleanbar movebar"><span class="hint" style="margin:0">Move ' + Object.keys(selected).length + " to</span>" +
             '<div class="chips">' + TIERS.map(function (t) {
@@ -758,9 +823,10 @@
 
   function selRowHTML(c) {
     var on = !!selected[c.id];
-    var meta = [c.tier];
-    if (c.school) meta.push(c.school);
-    if (c.company) meta.push(c.company);
+    var meta = [c.tier], pn = isPenn(c);
+    if (pn) meta.push("Penn");
+    if (c.school && !(pn && pennText(c.school))) meta.push(c.school);
+    if (c.company && !(pn && pennText(c.company))) meta.push(c.company);
     return '<div class="logrow clean pick' + (on ? " marked" : "") + '" data-act="selpick" data-id="' + c.id + '">' +
       '<span class="clbox">' + (on ? "✓" : "") + "</span>" +
       '<span class="body"><span class="t">' + (esc(c.name) || "Unnamed") + "</span>" +
@@ -1171,6 +1237,10 @@
         '<p class="note">Bulk-remove people who are no longer part of your life. Opens on contacts with ' +
         'no school or company tag \u2014 usually the oldest ones.</p>' +
         '<div class="field"><button class="btn-ghost" data-act="clopen">Start cleaning up \u2192</button></div>' +
+        (function () {
+          var nd = dupeGroups().length;
+          return nd ? '<div class="field"><button class="btn-ghost" data-act="opendupes">Review ' + nd + " possible duplicate" + (nd === 1 ? "" : "s") + " \u2192</button></div>" : "";
+        })() +
       "</div>" +
 
       /* --- backup, moved out of Add --- */
@@ -1239,24 +1309,173 @@
   }
 
   function normName(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
-  function dupeKeys(c) {
-    var keys = [];
-    var n = normName(c.name);
-    var p = digits(c.phone).slice(-10);
-    var e = String(c.email || "").toLowerCase().trim();
-    if (n && p) keys.push("np:" + n + ":" + p);
-    if (n && e) keys.push("ne:" + n + ":" + e);
-    if (p) keys.push("p:" + p);
-    if (e) keys.push("e:" + e);
+
+  /* ---------- who is the same person ----------
+     One rule for imports, for duplicate cards inside a file, and for the
+     Duplicates screen. Same person when any of these hold:
+       - the same full name, ignoring case, spaces and punctuation
+       - an email address in common
+       - the same first and last word of the name ("Sam J. Lee" = "Sam Lee")
+       - a phone number in common AND the same first name, or one first name
+         is the start of the other ("Sam" / "Sammy"), or one has no name.
+         A shared number alone is not enough, and neither is a shared last
+         name: siblings and parents share both. */
+  function nameWords(s) {
+    var t = String(s || "");
+    try { t = t.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); } catch (e) {}
+    return t.toLowerCase().split(/[^a-z0-9']+/).map(function (w) { return w.replace(/'/g, ""); })
+      .filter(function (w) { return w.length > 0; });
+  }
+  function phonesOf(c) {
+    return (c._phones || [c.phone]).map(function (p) { return digits(p).replace(/\D/g, "").slice(-10); })
+      .filter(function (p) { return p.length >= 7; });
+  }
+  function emailsOf(c) {
+    return (c._emails || [c.email]).map(function (e) { return String(e || "").toLowerCase().trim(); })
+      .filter(function (e) { return e.indexOf("@") > 0; });
+  }
+  function personKeys(c) {
+    var keys = [], n = normName(c.name), w = nameWords(c.name);
     if (n) keys.push("n:" + n);
+    if (w.length >= 2) keys.push("fl:" + w[0] + "|" + w[w.length - 1]);
+    emailsOf(c).forEach(function (e) { keys.push("e:" + e); });
+    phonesOf(c).forEach(function (p) { keys.push("p:" + p); });
     return keys;
   }
-  function buildDupeIndex() {
+  function overlap(a, b) { for (var i = 0; i < a.length; i++) if (b.indexOf(a[i]) !== -1) return true; return false; }
+  function samePerson(a, b) {
+    var na = normName(a.name), nb = normName(b.name);
+    if (na && na === nb) return true;
+    if (overlap(emailsOf(a), emailsOf(b))) return true;
+    var wa = nameWords(a.name), wb = nameWords(b.name);
+    if (wa.length >= 2 && wb.length >= 2 && wa[0] === wb[0] && wa[wa.length - 1] === wb[wb.length - 1]) {
+      // "Sam J Lee" = "Sam Lee", but "Sam J Lee" is not "Sam K Lee", and
+      // numbered entries ("Lab 1 Room", "Lab 2 Room") stay separate.
+      var ma = wa.slice(1, -1).join(" "), mb = wb.slice(1, -1).join(" ");
+      if (!ma || !mb || ma === mb || ma.indexOf(mb) === 0 || mb.indexOf(ma) === 0) return true;
+    }
+    if (overlap(phonesOf(a), phonesOf(b))) {
+      if (!wa.length || !wb.length) return true;
+      var fa = wa[0], fb = wb[0];
+      if (fa === fb) return true;
+      var shorter = fa.length < fb.length ? fa : fb, longer = shorter === fa ? fb : fa;
+      return shorter.length >= 3 && longer.indexOf(shorter) === 0;
+    }
+    return false;
+  }
+  function personIndex(list) {
     var idx = {};
-    state.contacts.forEach(function (c) {
-      dupeKeys(c).forEach(function (k) { if (!idx[k]) idx[k] = c; });
+    list.forEach(function (c) {
+      personKeys(c).forEach(function (k) { (idx[k] = idx[k] || []).push(c); });
     });
     return idx;
+  }
+  function findSame(c, idx, skip) {
+    var keys = personKeys(c);
+    for (var i = 0; i < keys.length; i++) {
+      var cands = idx[keys[i]] || [];
+      for (var j = 0; j < cands.length; j++) {
+        if (cands[j] !== c && cands[j] !== skip && samePerson(c, cands[j])) return cands[j];
+      }
+    }
+    return null;
+  }
+
+  /* Fold `from` into `into` without losing anything: blanks are filled,
+     different notes are kept side by side, histories are unioned, the higher
+     potential wins. Tier, clock and snooze stay with `into`. Returns the
+     fields that changed, with their old values, so it can be undone. */
+  var FILL_FIELDS = ["company", "school", "location", "locationConfirmed", "phone", "email"];
+  function absorb(into, from) {
+    var prev = {};
+    function set(k, v) { if (!(k in prev)) prev[k] = into[k]; into[k] = v; }
+    FILL_FIELDS.forEach(function (k) {
+      if (!String(into[k] || "").trim() && String(from[k] || "").trim()) set(k, from[k]);
+    });
+    // A Penn address is worth more than whatever email was there, but only
+    // when the existing one is not already a Penn address.
+    if (pennMail(from.email) && !pennMail(into.email) && into.email && into.email !== from.email) {
+      var extra = "Penn email: " + from.email;
+      if ((into.notes || "").indexOf(from.email) === -1) set("notes", (into.notes ? into.notes.replace(/\s*$/, "") + " \u00b7 " : "") + extra);
+    }
+    // Compared as whole pieces, so "copy 1" is not mistaken for part of "copy 10".
+    function has(text, piece, sep) {
+      text = String(text || "").trim();
+      return text === piece || text.split(sep).map(function (x) { return x.trim(); }).indexOf(piece) !== -1;
+    }
+    var fn = String(from.notes || "").trim(), inn = String(into.notes || "");
+    if (fn && !has(inn, fn, " \u00b7 ")) set("notes", inn.trim() ? inn.replace(/\s*$/, "") + " \u00b7 " + fn : fn);
+    var ff = String(from.followUp || "").trim(), inf = String(into.followUp || "").trim();
+    if (ff && !inf) set("followUp", ff);
+    else if (ff && !has(inf, ff, " / ")) set("followUp", inf + " / " + ff);
+    if (potLevel(from.potential) > potLevel(into.potential)) set("potential", from.potential);
+    if (into.penn === undefined && from.penn !== undefined) set("penn", from.penn);
+    else if (into.penn === undefined && pennMail(from.email) && !detectPenn(into)) set("penn", true);
+    var hist = dedupeDates((into.interactions || []).concat(from.interactions || []));
+    if (hist.length !== (into.interactions || []).length) {
+      set("interactions", hist);
+      set("lastContact", hist.length ? hist[hist.length - 1] : "");
+    }
+    var seen = {}, log = [];
+    (into.tierLog || []).concat(from.tierLog || []).forEach(function (m) {
+      if (!m || !m.date) return;
+      var k = m.date + "|" + m.from + "|" + m.to;
+      if (!seen[k]) { seen[k] = 1; log.push(m); }
+    });
+    if (log.length !== (into.tierLog || []).length) set("tierLog", log.sort(function (x, y) { return x.date < y.date ? -1 : 1; }));
+    if (from.added && (!into.added || from.added < into.added)) set("added", from.added);
+    if (into.pending && !from.pending) set("pending", false);
+    return prev;
+  }
+
+  /* ---------- duplicates already in the app ---------- */
+  var TIER_RANK = { Close: 4, Middle: 3, Acquaintance: 2, Networking: 1 };
+  function keeperOf(group) {
+    function filled(c) { return ["company", "school", "location", "phone", "email", "notes"].filter(function (k) { return (c[k] || "").trim(); }).length; }
+    return group.slice().sort(function (a, b) {
+      return (TIER_RANK[b.tier] || 0) - (TIER_RANK[a.tier] || 0) ||
+        potLevel(b.potential) - potLevel(a.potential) ||
+        interactionCount(b) - interactionCount(a) ||
+        filled(b) - filled(a) ||
+        String(a.added || "9999").localeCompare(String(b.added || "9999"));
+    })[0];
+  }
+  function dupeGroups() {
+    var list = state.contacts, idx = personIndex(list), parent = {};
+    function find(id) { while (parent[id] && parent[id] !== id) id = parent[id] = parent[parent[id]] || parent[id]; return id; }
+    list.forEach(function (c) { parent[c.id] = c.id; });
+    list.forEach(function (c) {
+      personKeys(c).forEach(function (k) {
+        (idx[k] || []).forEach(function (o) {
+          if (o !== c && find(o.id) !== find(c.id) && samePerson(c, o)) parent[find(o.id)] = find(c.id);
+        });
+      });
+    });
+    var groups = {};
+    list.forEach(function (c) { var r = find(c.id); (groups[r] = groups[r] || []).push(c); });
+    return Object.keys(groups).map(function (k) { return groups[k]; })
+      .filter(function (g) { return g.length > 1; })
+      .sort(function (a, b) { return (keeperOf(a).name || "").localeCompare(keeperOf(b).name || ""); });
+  }
+  function mergeGroups(groups) {
+    var snapshot = { contacts: JSON.stringify(state.contacts), deleted: JSON.stringify(state.deleted) };
+    var gone = {}, n = 0;
+    groups.forEach(function (g) {
+      var keep = keeperOf(g);
+      g.forEach(function (c) {
+        if (c === keep) return;
+        absorb(keep, c);
+        gone[c.id] = true;
+        state.deleted.push({ id: c.id, at: nowISO() });
+        n++;
+      });
+      touch(keep);
+    });
+    state.contacts = state.contacts.filter(function (c) { return !gone[c.id]; });
+    lastMerge = n ? snapshot : null;
+    orderSnapshot = null;
+    commit();
+    return n;
   }
 
   function previewGroups(P) {
@@ -1301,18 +1520,28 @@
     var needTier = newRows.length - (P.respectFile ? preTiered : 0);
 
     var keepN = P.respectFile ? preTiered : 0;
-    return '<div class="eyebrow">Review before importing</div><h2>' + P.rows.length + ' rows read</h2>' +
-      '<p class="sub">Nothing has been saved yet.</p>' +
+    var pennNew = newRows.filter(function (r) { return r.penn; }).length;
+    var fills = P.rows.filter(function (r) { return r.dupe && r.fills; }).length;
+    var splitPenn = pennNew > 0 && pennNew < newRows.length;
+    return '<div class="eyebrow">Review before importing</div><h2>' + P.rows.length + " " + (P.rows.length === 1 ? "person" : "people") + " in this file</h2>" +
+      '<p class="sub">Nothing has been saved yet.' +
+        (P.fileMerged ? " " + P.fileMerged + " repeated card" + (P.fileMerged === 1 ? " was" : "s were") + " combined with the first copy." : "") + "</p>" +
 
-      '<div class="card"><h3>' + newRows.length + " new " + (newRows.length === 1 ? "person" : "people") + "</h3>" +
+      '<div class="card"><h3>' + newRows.length + " new " + (newRows.length === 1 ? "person" : "people") +
+        (pennNew ? ' <span class="tag pn">' + pennNew + " from Penn</span>" : "") + "</h3>" +
         '<p class="note">' +
-          (newRows.length - keepN) + " go to Acquaintance" +
-          (keepN ? " · " + keepN + " keep the tier from the file" : "") +
-          (dupes ? " · " + dupes + " already here, " + (P.dupeMode === "skip" ? "skipped" : "merged") + " (their tier never changes)" : "") +
-          ". Promote anyone later from the list — no sorting now.</p>" +
-        (newRows.length
-          ? '<div class="field"><button class="btn" data-act="pvquick">Add ' + newRows.length + (keepN ? " — " + (newRows.length - keepN) + " as Acquaintance" : " as Acquaintance") + "</button></div>"
-          : "") +
+          (newRows.length ? (newRows.length - keepN) + " go to Acquaintance" + (keepN ? " \u00b7 " + keepN + " keep the tier from the file" : "") + ". " : "") +
+          (dupes ? dupes + " already here" + (P.dupeMode === "skip" ? ", left as they are. "
+              : fills ? ": " + fills + " get empty fields filled in. Nothing you typed and no tier changes. " : ", nothing new to add. ") : "") +
+          "Nobody is added twice.</p>" +
+        (splitPenn
+          ? '<div class="field"><button class="btn" data-act="pvquickpenn">Add the ' + pennNew + " Penn " + (pennNew === 1 ? "person" : "people") + "</button></div>" +
+            '<div class="field"><button class="btn-ghost" data-act="pvquick">Add all ' + newRows.length + " new people</button></div>"
+          : newRows.length
+            ? '<div class="field"><button class="btn" data-act="pvquick">Add ' + newRows.length + (keepN ? " \u2014 " + (newRows.length - keepN) + " as Acquaintance" : " as Acquaintance") + "</button></div>"
+            : (fills && P.dupeMode === "update"
+                ? '<div class="field"><button class="btn" data-act="pvquick">Fill in ' + fills + " existing " + (fills === 1 ? "person" : "people") + "</button></div>"
+                : "")) +
         '<div class="field"><button class="btn-ghost" data-act="pvcancel">Cancel</button></div>' +
       "</div>" +
 
@@ -1330,9 +1559,9 @@
 
       '<div class="card"><h3>Duplicates</h3>' +
         (dupes
-          ? '<p class="note">' + dupes + ' of these already exist here (matched on name, phone, or email).</p>' +
+          ? '<p class="note">' + dupes + ' of these already exist here (the same name, email, or a shared phone with a matching name).</p>' +
             '<div class="chips">' +
-              [["skip", "Skip them"], ["update", "Update mine with the new info"]].map(function (o) {
+              [["update", "Fill in their empty fields"], ["skip", "Leave them as they are"]].map(function (o) {
                 return '<button class="chip' + (P.dupeMode === o[0] ? " on" : "") + '" data-act="pvdupe" data-val="' + o[0] + '">' + o[1] + "</button>";
               }).join("") +
             "</div>"
@@ -1474,7 +1703,8 @@
         trend("Conversations logged", now.logged, prev.logged, prev2.logged) +
       "</div>" +
 
-      '<h3 class="logsec">Your circle</h3><div class="card balance">' + balance + "</div>" +
+      '<h3 class="logsec">Your circle</h3><div class="card balance">' + balance +
+        '<p class="hint" style="margin:8px 0 0">' + active.filter(isPenn).length + " of " + active.length + " are from Penn.</p></div>" +
 
       (month.length
         ? '<h3 class="logsec">Talked to this month <span class="n">' + month.length + "</span></h3><div class=\"loglist\">" +
@@ -1523,19 +1753,62 @@
       .sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
   }
 
+  function cleanFiltersHTML() {
+    var nd = dupeGroups().length;
+    return '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
+        var n = state.contacts.filter(function (c) { return !c.pending && f.test(c); }).length;
+        return '<button class="filter' + (cleanup.filter === f.key ? " on" : "") + '" data-act="clfilter" data-val="' + f.key + '">' +
+          f.label + '<span class="n">' + n + "</span></button>";
+      }).join("") +
+      '<button class="filter' + (cleanup.filter === "dupes" ? " on" : "") + '" data-act="clfilter" data-val="dupes">Duplicates<span class="n">' + nd + "</span></button>" +
+      "</div>";
+  }
+
+  function viewDupes() {
+    var groups = dupeGroups();
+    function meta(c) {
+      var m = [c.tier];
+      if (isPenn(c)) m.push("Penn");
+      if (c.school && !pennText(c.school)) m.push(c.school);
+      if (c.company && !pennText(c.company)) m.push(c.company);
+      if (c.phone) m.push("\u2026" + digits(c.phone).replace(/\D/g, "").slice(-4));
+      if (c.email) m.push(c.email.split("@")[1] || "");
+      if (interactionCount(c)) m.push(interactionCount(c) + " logged");
+      return m.filter(Boolean).join(" \u00b7 ");
+    }
+    return pageHead("cleanup", "Prune the list", "Duplicates") +
+      subLine("The same person saved more than once. Merging keeps the closest tier, every note and every logged conversation.") +
+      cleanFiltersHTML() +
+      (!groups.length
+        ? '<div class="card ok-card"><h3>No duplicates</h3><p class="note">Nobody here is saved twice.</p></div>'
+        : '<div class="rowsplit" style="margin-bottom:10px"><p class="hint" style="margin:0">' + groups.length + " " +
+            (groups.length === 1 ? "person is" : "people are") + " saved more than once.</p>" +
+            '<button class="btn-ghost sm" data-act="mergeall">Merge all</button></div>' +
+          groups.map(function (g) {
+            var keep = keeperOf(g);
+            var ordered = [keep].concat(g.filter(function (c) { return c !== keep; }));
+            return '<div class="card dupegroup">' +
+              ordered.map(function (c, i) {
+                return '<div class="duperow"><span class="t">' + (esc(c.name) || "Unnamed") +
+                  (i === 0 ? ' <span class="keeps">keeps</span>' : "") + "</span>" +
+                  '<span class="d">' + esc(meta(c)) + "</span></div>";
+              }).join("") +
+              '<div class="field"><button class="btn-ghost sm" data-act="mergegroup" data-val="' +
+                g.map(function (c) { return c.id; }).join(",") + '">Merge into one</button></div>' +
+            "</div>";
+          }).join("")) +
+      '<div class="cleanbar"><button class="btn-ghost" data-act="clexit">Done</button></div>';
+  }
+
   function viewCleanup() {
+    if (cleanup.filter === "dupes") return viewDupes();
     var list = cleanupCandidates();
     var markedIds = Object.keys(cleanup.marked).filter(function (k) { return cleanup.marked[k]; });
     var shown = searchContacts(list, cleanup.q || "");
 
     return pageHead("cleanup", "Prune the list", "Clean up") +
       subLine("Tap anyone you no longer want. Nothing is deleted until you confirm.") +
-
-      '<div class="filters">' + CLEAN_FILTERS.map(function (f) {
-        var n = state.contacts.filter(function (c) { return !c.pending && f.test(c); }).length;
-        return '<button class="filter' + (cleanup.filter === f.key ? " on" : "") + '" data-act="clfilter" data-val="' + f.key + '">' +
-          f.label + '<span class="n">' + n + "</span></button>";
-      }).join("") + "</div>" +
+      cleanFiltersHTML() +
 
       '<div class="searchwrap"><input type="search" id="clSearch" value="' + esc(cleanup.q || "") +
         '" placeholder="Filter these by name…" autocomplete="off"></div>' +
@@ -1581,6 +1854,9 @@
         '<input type="text" id="qLine" placeholder="Sam Lee at Geography Club" autocomplete="off" ' +
           'autocapitalize="words" enterkeyhint="done" aria-label="Name, and where you met">' +
         '<p class="hint" style="margin:8px 0 0">Name, then where you met if you like. Enter saves. Nothing else is needed.</p>' +
+        '<div class="field caprow"><button class="chip pennchip' + (qPennOn() ? " on" : "") + '" id="qPenn" data-act="qpenn">' +
+          (qPennOn() ? "\u2713 From Penn" : "From Penn") + "</button>" +
+          '<span class="hint" style="margin:0">' + (qPennOn() ? "On for everyone you add until you turn it off" : "Off. Turns on by itself if you type Penn or Wharton") + "</span></div>" +
         '<div class="field"><button class="btn" data-act="quickadd">Save</button></div>' +
         '<details class="more"' + (qOpen ? " open" : "") + ' id="qMore"><summary>More details</summary>' +
           '<div class="field"><label class="f">Tier</label><div class="chips" id="qTier">' +
@@ -1980,6 +2256,26 @@
 
       case "qtier": qDraft.tier = val; syncChips("#qTier", val); break;
       case "qpot": qDraft.potential = qDraft.potential === val ? "" : val; syncChips("#qPot", qDraft.potential); break;
+      case "qpenn": {
+        // A tap is a choice, so it becomes the default for the next people too.
+        qPenn = !qPennOn();
+        state.settings.capturePenn = qPenn;
+        commitQuiet();
+        setCapturePennChip();
+        break;
+      }
+      case "togglepenn": {
+        if (!c) break;
+        togglePenn(c);
+        commit();
+        toast(isPenn(c) ? "Marked " + (c.name || "").split(" ")[0] + " as Penn" : "Marked " + (c.name || "").split(" ")[0] + " as not Penn");
+        break;
+      }
+      case "pennonly":
+        pennOnly = !pennOnly; state.settings.pennOnly = pennOnly;
+        orderSnapshot = null; listLimit = LIST_STEP; selected = {};
+        commitQuiet(); render();
+        break;
       case "quickadd": quickAdd(); break;
       case "addanyway": dupeOk = val; quickAdd(val); break;
       case "dismissadded": lastAdded = null; render(); break;
@@ -2030,6 +2326,34 @@
       }
       case "pvconfirm": applyImport(false); break;
       case "pvquick": applyImport(true); break;
+      case "pvquickpenn": applyImport(true, true); break;
+      case "mergegroup": {
+        var gids = (val || "").split(",");
+        var grp = dupeGroups().filter(function (g) { return g.some(function (x) { return gids.indexOf(x.id) !== -1; }); });
+        var mn = mergeGroups(grp);
+        toast("Merged " + (mn + 1) + " into one", mn ? "Undo" : null, "undomerge");
+        break;
+      }
+      case "mergeall": {
+        var all = dupeGroups();
+        if (!all.length) break;
+        var extra = all.reduce(function (s2, g) { return s2 + g.length - 1; }, 0);
+        if (!confirm("Merge " + all.length + " groups? " + extra + " duplicate records fold into the one you keep. " +
+                     "Nothing typed is lost, and you get one undo.")) break;
+        mergeGroups(all);
+        toast("Merged " + all.length + " groups", "Undo", "undomerge");
+        break;
+      }
+      case "undomerge": {
+        if (!lastMerge) { toast("Nothing to undo"); break; }
+        state.contacts = JSON.parse(lastMerge.contacts);
+        state.deleted = JSON.parse(lastMerge.deleted);
+        lastMerge = null; orderSnapshot = null;
+        commit();
+        toast("Merge undone");
+        break;
+      }
+      case "opendupes": cleanup = { filter: "dupes", marked: {}, q: "" }; tab = "settings"; render(); break;
       case "undoimport": undoImport(); break;
       case "undomove": undoMove(); break;
       case "selmode": selectMode = !selectMode; selected = {}; openId = null; render(); break;
@@ -2191,6 +2515,27 @@
     for (var i = 0; i < nodes.length; i++) nodes[i].classList.toggle("on", nodes[i].dataset.val === val);
   }
 
+  /* Typing "Penn", "UPenn" or "Wharton" in the capture line switches the
+     toggle on for this person. It never switches it off, and it does not
+     change the remembered default. */
+  function setCapturePennChip() {
+    var b = document.getElementById("qPenn");
+    if (!b) return;
+    var on = qPennOn();
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.textContent = on ? "\u2713 From Penn" : "From Penn";
+    var h = b.nextElementSibling;
+    if (h) h.textContent = on ? (qPenn === true && !capturePennDefault() ? "On for this person" : "On for everyone you add until you turn it off")
+                              : "Off. Turns on by itself if you type Penn or Wharton";
+  }
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.id === "qLine" && !qPennOn() && pennText(e.target.value)) {
+      qPenn = true;
+      setCapturePennChip();
+    }
+  });
+
   document.addEventListener("input", function (e) {
     var el = e.target.closest("[data-act]");
     if (!el || !el.dataset.id) return;
@@ -2313,9 +2658,13 @@
       notes: [p.context, val("qNotes")].filter(Boolean).join(". "),
       added: today(), tierSince: today()
     });
+    // Toggle on: from Penn. Stored only when the school or company typed
+    // here does not already say so. Toggle off: left to the fields.
+    if ((qPennOn() || pennText(line)) && !detectPenn(c)) c.penn = true;
     state.contacts.unshift(c);
     lastAdded = c.id;
     qDraft = { tier: "Acquaintance", potential: "" };
+    qPenn = null;
     commit();
     toast("Added " + p.name);
     focusCapture();
@@ -2338,6 +2687,7 @@
         POTENTIAL.map(function (x) {
           return '<button class="chip' + (c.potential === x.key ? " on" : "") + '" data-p="1" data-act="setpot" data-id="' + c.id + '" data-val="' + x.key + '" title="' + x.blurb + '">' + x.key + "</button>";
         }).join("") + "</div></div>" +
+      pennChipHTML(c) +
       '<div class="field"><button class="btn-ghost sm" data-act="delete" data-id="' + c.id + '">Remove ' + esc(c.name.split(" ")[0]) + "</button></div>" +
     "</div>";
   }
@@ -2379,6 +2729,7 @@
         potential: potLevel(row.potential) ? row.potential : "",
         locationConfirmed: row.locationconfirmed || "",
         followUp: row.followup || "",
+        penn: /^(yes|y|true|1)$/i.test(row.penn || "") ? true : /^(no|n|false|0)$/i.test(row.penn || "") ? false : undefined,
         company: row.company || row.organization || "",
         school: row.school || "",
         location: row.location || row.city || "",
@@ -2396,21 +2747,70 @@
     }).filter(function (c) { return c.name; });
   }
 
+  /* vCard 3.0/4.0 as phones and iCloud export it: long lines are folded onto
+     the next line, Apple prefixes fields with "item1.", a card can have many
+     phones and emails, and photos make the file huge. Photos are skipped.
+     Extra phones and emails are kept only for matching duplicates. */
+  function vUnescape(s) { return String(s || "").replace(/\\n/gi, " ").replace(/\\([,;:\\])/g, "$1").trim(); }
+  function vParts(raw) {
+    return String(raw || "").replace(/\\\\/g, "\u0002").replace(/\\;/g, "\u0001").split(";")
+      .map(function (p) { return vUnescape(p.replace(/\u0001/g, "\\;").replace(/\u0002/g, "\\\\")); });
+  }
   function parseVCF(text) {
-    var cards = text.split(/END:VCARD/i), out = [];
+    var unfolded = String(text).replace(/\r\n?/g, "\n").replace(/\n[ \t]/g, "");
+    var cards = unfolded.split(/END:VCARD/i), out = [];
     cards.forEach(function (card) {
       if (!/BEGIN:VCARD/i.test(card)) return;
-      var name = (card.match(/^FN[^:]*:(.+)$/im) || [])[1] || "";
-      var tel = (card.match(/^TEL[^:]*:(.+)$/im) || [])[1] || "";
-      var em = (card.match(/^EMAIL[^:]*:(.+)$/im) || [])[1] || "";
-      var org = (card.match(/^ORG[^:]*:(.+)$/im) || [])[1] || "";
-      if (!name.trim()) return;
+      var props = {};
+      card.split("\n").forEach(function (line) {
+        var m = /^(?:[A-Za-z0-9-]+\.)?([A-Za-z-]+)((?:;[^:]*)?):(.*)$/.exec(line);
+        if (!m) return;
+        var k = m[1].toUpperCase();
+        if (k === "PHOTO" || k === "LOGO" || k === "SOUND" || k === "KEY") return;
+        (props[k] = props[k] || []).push(m[3]);
+      });
+      var name = vUnescape((props.FN || [""])[0]);
+      if (!name && props.N) {
+        var n = vParts(props.N[0]);   // Last;First;Middle;Prefix;Suffix
+        name = [n[3], n[1], n[2], n[0], n[4]].filter(Boolean).join(" ");
+      }
+      name = name.replace(/\s+/g, " ").trim();
+      if (!name) return;
+      var emails = (props.EMAIL || []).map(function (e) { return vUnescape(e).replace(/^mailto:/i, "").toLowerCase(); }).filter(Boolean);
+      var phones = (props.TEL || []).map(function (t) { return vUnescape(t).replace(/^tel:/i, ""); }).filter(Boolean);
+      var penn = emails.filter(pennMail);
+      var org = props.ORG ? vParts(props.ORG[0]).filter(Boolean).join(" \u00b7 ") : "";
       out.push(blankContact({
-        name: name.trim(), tier: "Acquaintance", company: org.split(";")[0].trim(),
-        phone: tel.trim(), email: em.trim(), pending: true
+        name: name, tier: "Acquaintance", company: org,
+        phone: phones[0] || "", email: penn[0] || emails[0] || "",
+        notes: props.NOTE ? vUnescape(props.NOTE[0]) : "",
+        pending: true, _phones: phones, _emails: emails
       }));
     });
     return out;
+  }
+
+  /* Cards for the same person inside one file become one row. */
+  function mergeWithinFile(rows) {
+    var kept = [], idx = {}, merged = 0;
+    rows.forEach(function (c) {
+      var twin = findSame(c, idx);
+      if (twin) {
+        absorb(twin, c);
+        twin._phones = (twin._phones || [twin.phone]).concat(c._phones || [c.phone]).filter(Boolean);
+        twin._emails = (twin._emails || [twin.email]).concat(c._emails || [c.email]).filter(Boolean);
+        if (!pennMail(twin.email)) { var pm = twin._emails.filter(pennMail)[0]; if (pm) twin.email = pm; }
+        if (twin.pending && !c.pending) { twin.pending = false; twin.tier = c.tier; }
+        merged++;
+      } else {
+        kept.push(c);
+      }
+      personKeys(twin || c).forEach(function (k) {
+        var l = idx[k] = idx[k] || [];
+        if (l.indexOf(twin || c) === -1) l.push(twin || c);
+      });
+    });
+    return { rows: kept, merged: merged };
   }
 
   function handleFile(e) {
@@ -2434,16 +2834,21 @@
         if (status) status.textContent = "Could not read any contacts from that file.";
         return;
       }
-      var idx = buildDupeIndex();
+      var inFile = mergeWithinFile(rows);
+      var idx = personIndex(state.contacts);
       importPreview = {
-        rows: rows.map(function (c) {
-          var hit = null;
-          dupeKeys(c).some(function (k) { if (idx[k]) { hit = idx[k]; return true; } return false; });
-          return { c: c, dupe: hit ? hit.id : null };
+        fileMerged: inFile.merged,
+        rows: inFile.rows.map(function (c) {
+          var hit = findSame(c, idx);
+          // Dry run on a copy: would filling in change anything on that person?
+          var fills = hit ? Object.keys(absorb(Object.assign({}, hit), importable(c))).length > 0 : false;
+          return { c: c, dupe: hit ? hit.id : null, penn: isPenn(c), fills: fills };
         }),
         /* v9.3: everyone lands in Acquaintance by default. Sorting is something
-           you do later, for the people who matter, not a queue you must clear. */
-        dupeMode: "skip", defaultTier: "Acquaintance", groupBy: "school", groups: {}, respectFile: true
+           you do later, for the people who matter, not a queue you must clear.
+           v9.9: people already here get their blanks filled by default; that
+           never changes a tier or anything you typed. */
+        dupeMode: "update", defaultTier: "Acquaintance", groupBy: "school", groups: {}, respectFile: true
       };
       e.target.value = "";
       render();
@@ -2451,30 +2856,26 @@
     reader.readAsText(f);
   }
 
-  function applyImport(quick) {
-    var P = importPreview, added = 0, updated = 0, skipped = 0;
+  function applyImport(quick, onlyPenn) {
+    var P = importPreview, added = 0, updated = 0, skipped = 0, left = 0;
     if (quick) { P.defaultTier = "Acquaintance"; P.groups = {}; }
-    var batch = "imp-" + uid(), addedIds = [];
+    var batch = "imp-" + uid(), addedIds = [], filled = [];
     P.rows.forEach(function (r) {
+      var c = r.c;
       if (r.dupe) {
-        if (P.dupeMode === "update") {
-          var ex = byId(r.dupe);
-          if (ex) {
-            ["company", "school", "location", "phone", "email"].forEach(function (f) {
-              if (!ex[f] && r.c[f]) ex[f] = r.c[f];
-            });
-            if (r.c.notes && ex.notes.indexOf(r.c.notes) === -1) {
-              ex.notes = ex.notes ? ex.notes + " · " + r.c.notes : r.c.notes;
-            }
-            touch(ex); updated++;
-          }
+        var ex = P.dupeMode === "update" ? byId(r.dupe) : null;
+        if (ex) {
+          var stamp = ex.updatedAt;
+          var prev = absorb(ex, importable(c));
+          if (Object.keys(prev).length) { filled.push({ id: ex.id, prev: prev, updatedAt: stamp }); touch(ex); updated++; }
         } else skipped++;
         return;
       }
+      if (onlyPenn && !r.penn) { left++; return; }
       var t = effTier(P, r);
-      var c = r.c;
       if (t === "Unsorted") { c.pending = true; c.tier = "Acquaintance"; }
       else { c.pending = false; c.tier = t; }
+      delete c._phones; delete c._emails;
       c.importBatchId = batch;
       c.importedAt = today();
       touch(c);
@@ -2485,25 +2886,40 @@
     importPreview = null;
     queueHistory = []; queueIndex = 0;
     if (added) state.settings.lastImport = batch;
-    lastImport = added ? { batch: batch, ids: addedIds } : null;
+    lastImport = (added || filled.length) ? { batch: batch, ids: addedIds, filled: filled } : null;
     commit();
-    toast("Imported " + added + (updated ? ", updated " + updated : "") + (skipped ? ", skipped " + skipped : ""),
-          added ? "Undo" : null, "undoimport");
+    toast("Added " + added + (updated ? ", filled in " + updated : "") + (left ? ", left out " + left + " not from Penn" : ""),
+          lastImport ? "Undo" : null, "undoimport");
+  }
+
+  /* What an import may contribute to someone already here. Tier, clock and
+     snooze are never on this list. */
+  function importable(c) {
+    return { company: c.company, school: c.school, location: c.location, phone: c.phone,
+             email: c.email, notes: c.notes, penn: c.penn, potential: c.potential,
+             interactions: c.interactions, tierLog: c.tierLog };
   }
 
   /* Removes exactly the contacts one import added, with tombstones so a sync
-     from another device cannot bring them back. Merged fields on duplicates
-     are left alone: those were your existing people. */
+     from another device cannot bring them back, and puts back every field
+     the import filled in on people who were already here. */
   function undoImport() {
     if (!lastImport) { toast("Nothing to undo"); return; }
     var ids = lastImport.ids;
     state.contacts = state.contacts.filter(function (c) { return ids.indexOf(c.id) === -1; });
     ids.forEach(function (id) { state.deleted.push({ id: id, at: nowISO() }); });
+    (lastImport.filled || []).forEach(function (f) {
+      var c = byId(f.id);
+      if (!c) return;
+      Object.keys(f.prev).forEach(function (k) { if (f.prev[k] === undefined) delete c[k]; else c[k] = f.prev[k]; });
+      touch(c);
+    });
     if (state.settings.lastImport === lastImport.batch) state.settings.lastImport = "";
     if (tierFilter === "Imported") tierFilter = "Acquaintance";
+    var n = ids.length, m = (lastImport.filled || []).length;
     lastImport = null;
     commit();
-    toast("Import undone — removed " + ids.length);
+    toast("Import undone" + (n ? ", removed " + n : "") + (m ? ", restored " + m : ""));
   }
 
   /* Multi-select "Move to". Bulk moves into a tracked tier stagger the clock
@@ -2621,13 +3037,15 @@
      round-trips the full history. Without these a backup silently loses
      every date you ever logged. */
   function csvString() {
-    var cols = ["name", "tier", "potential", "company", "school",
+    var cols = ["name", "tier", "potential", "penn", "company", "school",
                 "location", "locationConfirmed", "lastContact", "notes", "followUp", "phone", "email",
                 "interactions", "tierchanges"];
     var lines = [cols.join(",")];
     state.contacts.forEach(function (c) {
       lines.push(cols.map(function (k) {
         if (k === "interactions") return csvCell((c.interactions || []).join(";"));
+        // Only your overrides are written; blank means "work it out from company/school".
+        if (k === "penn") return c.penn === true ? "yes" : c.penn === false ? "no" : "";
         if (k === "tierchanges") {
           return csvCell((c.tierLog || []).map(function (m) {
             return m.date + ">" + m.from + ">" + m.to;
@@ -2684,6 +3102,7 @@
 
   state = load();
   save();
+  pennOnly = !!state.settings.pennOnly;
   try { localStorage.setItem(VER_KEY, APP_VERSION); } catch (e) {}
   var firstNudge = nudgeCandidate();
   nudgeFor = firstNudge ? firstNudge.id : null;

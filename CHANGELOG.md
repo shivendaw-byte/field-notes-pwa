@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.9 — 2026-11-19 — Penn and duplicates
+- Penn badge on every contact, worked out from the company, school or a upenn.edu email you already have. "University of Pennsylvania" in the company shows as one short Penn badge. Penn State and similar names do not count.
+- "From Penn" toggle on the Add card. It starts on, remembers when you turn it off, and switches on by itself when you type Penn, UPenn or Wharton.
+- "From Penn" on every contact: one tap overrides, a second tap goes back to automatic.
+- "Penn only" button above every list, remembered between opens.
+- Contacts file import (vCard from iPhone or iCloud): handles folded lines, several phones and emails, and photos; repeated cards in the file are combined; people already here are matched and get only their empty fields filled in; a new "Add the Penn people" button imports only those.
+- Duplicates screen (Settings, Clean up): people saved more than once, merged one group at a time or all at once, keeping the closest tier, every note and every logged conversation. Undo.
+- Same-person rule tightened: a shared phone number needs the same first name, and different middle names or numbers keep entries apart.
+- Import undo now also puts back fields it filled in.
+
 ## 9.8 — 2026-11-16 — polish
 - New users see a "Start with one person" card instead of an empty list.
 - Phone, email and passphrase boxes are full height (they were 22px tall and unstyled).

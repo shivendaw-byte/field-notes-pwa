@@ -767,6 +767,314 @@
     eq(ev("state.contacts.length"), 10);
   });
 
+  /* ================= Penn (v9.9) ================= */
+
+  test("Penn detection: Penn names count; Penn State and lookalikes do not", async function () {
+    await boot(null);
+    var yes = ["University of Pennsylvania", "UPenn", "U Penn", "Penn", "The Wharton School", "Wharton",
+               "Penn Medicine", "Penn Engineering", "Perelman School of Medicine", "Univ. of Pennsylvania",
+               "Undergraduate Geography Club at Penn", "Penn '29"];
+    var no = ["Penn State", "Pennsylvania State University", "PennState Health", "Penn Mutual", "PennDOT",
+              "Indiana University of Pennsylvania", "Penn Charter", "Penn Foster", "Drexel", "Acme", "",
+              "Pennsylvania", "Wharton County Junior College", "Penn Station", "Pennsylvania Hospital"];
+    var wrongYes = yes.filter(function (s) { return !ev("pennText(" + JSON.stringify(s) + ")"); });
+    var wrongNo = no.filter(function (s) { return ev("pennText(" + JSON.stringify(s) + ")"); });
+    eq([wrongYes, wrongNo], [[], []]);
+  });
+
+  test("Penn badge comes from the company already saved, without writing anything", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 40)[0], { id: "co", name: "Company Penn", tier: "Acquaintance", company: "University of Pennsylvania", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 41)[0], { id: "sc", name: "School Penn", tier: "Acquaintance", company: "Acme", school: "Wharton" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 42)[0], { id: "ps", name: "State Person", tier: "Acquaintance", company: "Penn State", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 43)[0], { id: "no", name: "Plain Person", tier: "Acquaintance", company: "", school: "" }));
+    var before = JSON.stringify(s.contacts);
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    function row(id) { return T.$('.row-head[data-id="' + id + '"]').innerText; }
+    assert(/Penn/.test(row("co")) && !/University of Pennsylvania/.test(row("co")), "company should show as one Penn badge: " + row("co"));
+    assert(/Penn/.test(row("sc")) && /Acme/.test(row("sc")) && !/Wharton/.test(row("sc")), row("sc"));
+    assert(!T.$('.row-head[data-id="ps"] .tag.pn'), "Penn State marked as Penn");
+    assert(!T.$('.row-head[data-id="no"] .tag.pn'));
+    eq(JSON.stringify(T.stored().contacts), before, "showing the badge changed stored data");
+    // the full company is still there when the row is open
+    T.click('.row-head[data-id="co"]');
+    eq(T.$('.row-body [data-act="setco"]').value, "University of Pennsylvania");
+    assert(/Worked out from the company/.test(T.$(".row-body").innerText));
+  });
+
+  test("Penn on a contact: one tap overrides, a second tap goes back to automatic", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 50)[0], { id: "co", name: "Company Penn", tier: "Close", company: "UPenn", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 51)[0], { id: "hm", name: "Home Friend", tier: "Close", company: "", school: "" }));
+    await boot(s, { ver: "x" });
+    T.click('.row-head[data-id="co"]');
+    T.click('.row-body [data-act="togglepenn"]');
+    eq(ev("byId('co').penn"), false);
+    assert(!T.$('.row-head[data-id="co"] .tag.pn'), "badge should go");
+    T.click('.row-body [data-act="togglepenn"]');
+    eq(ev("'penn' in byId('co')"), false, "back to automatic should drop the override");
+    assert(T.$('.row-head[data-id="co"] .tag.pn'));
+    T.click('.row-head[data-id="hm"]');
+    T.click('.row-body [data-act="togglepenn"]');
+    eq(ev("byId('hm').penn"), true);
+    assert(T.$('.row-head[data-id="hm"] .tag.pn'));
+  });
+
+  test("capture: From Penn starts on; turning it off is remembered; typing Penn turns it on for one person", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    assert(T.$("#qPenn").classList.contains("on"), "should start on");
+    T.type("#qLine", "Avery Stone at NSO"); T.key("#qLine", "Enter");
+    eq(ev("state.contacts[0].penn"), true);
+    assert(/From Penn/.test(T.$(".justadded").innerText) && T.$('.justadded .pennchip.on'), "follow-up card should show Penn on");
+    // turn it off
+    T.click("#qPenn");
+    assert(!T.$("#qPenn").classList.contains("on"));
+    eq(ev("state.settings.capturePenn"), false);
+    T.type("#qLine", "Home Friend from high school"); T.key("#qLine", "Enter");
+    eq(ev("'penn' in state.contacts[0] && state.contacts[0].penn !== undefined"), false);
+    eq(ev("isPenn(state.contacts[0])"), false);
+    // remembered after reopening
+    await boot(null, { keep: true });
+    T.click('.tab[data-tab="add"]');
+    assert(!T.$("#qPenn").classList.contains("on"), "the off choice was not remembered");
+    // typing Penn switches it on for this person only
+    T.type("#qLine", "Kai Reed at Penn Geography Club");
+    assert(T.$("#qPenn").classList.contains("on"), "typing Penn should switch it on");
+    T.key("#qLine", "Enter");
+    eq(ev("state.contacts[0].penn"), true);
+    assert(!T.$("#qPenn").classList.contains("on"), "should fall back to the remembered default (off)");
+    eq(ev("state.settings.capturePenn"), false);
+  });
+
+  test("capture: a Penn school typed in More details needs no override", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.$("#qMore").open = true;
+    T.$("#qSc").value = "Wharton";
+    T.type("#qLine", "Jules Wood"); T.key("#qLine", "Enter");
+    eq([ev("state.contacts[0].penn"), ev("isPenn(state.contacts[0])")], [undefined, true]);
+  });
+
+  test("Penn only: filters any tier, keeps its button when the result is empty, and search finds Penn", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 6; i++) s.contacts.push(Object.assign(FNFake.makeContacts(1, 60 + i)[0], {
+      id: "m" + i, name: "Middle " + i, tier: "Middle", company: i < 2 ? "University of Pennsylvania" : "", school: "", notes: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 70)[0], { id: "x", name: "Explicit One", tier: "Close", company: "", school: "", notes: "", penn: true }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 71)[0], { id: "y", name: "Not Here", tier: "Networking", company: "Globex", school: "", notes: "" }));
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Middle"]');
+    assert(/Penn only\s*2/.test(T.$('[data-act="pennonly"]').innerText), T.$('[data-act="pennonly"]').innerText);
+    T.click('[data-act="pennonly"]');
+    eq(T.$$(".row").length, 2);
+    T.click('[data-act="filter"][data-val="Networking"]');
+    eq(T.$$(".row").length, 0);
+    assert(T.$('[data-act="pennonly"]'), "Penn only button vanished on an empty result");
+    assert(/Nobody in Networking is marked as Penn/.test(T.text()));
+    T.click('[data-act="pennonly"]');
+    eq(T.$$(".row").length, 1);
+    // select + move respects the filter
+    T.click('[data-act="filter"][data-val="Middle"]');
+    T.click('[data-act="pennonly"]');
+    T.click('[data-act="selmode"]');
+    eq(T.$$('[data-act="selpick"]').length, 2);
+    T.click('[data-act="selmode"]');
+    T.click('[data-act="pennonly"]');
+    // search
+    T.click('[data-act="filter"][data-val="Close"]');
+    T.type("#tierSearch", "penn");
+    await wait(200);
+    eq(T.$$(".row").length, 1, "search for penn should find the explicit one");
+  });
+
+  test("Penn survives CSV and full backup round trips", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 80)[0], { id: "a", name: "Yes Override", company: "", school: "", penn: true }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 81)[0], { id: "b", name: "No Override", company: "UPenn", school: "", penn: false }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 82)[0], { id: "c", name: "Auto Penn", company: "Wharton", school: "" }));
+    await boot(s, { ver: "x" });
+    var rows = ev("parseCSV(csvString()).map(function (c) { return [c.name, c.penn === undefined ? 'auto' : c.penn, isPenn(c)]; })");
+    eq(rows, [["Yes Override", true, true], ["No Override", false, false], ["Auto Penn", "auto", true]]);
+    var before = ev("JSON.stringify(state)");
+    ev("applyRestored(parseBackup(backupString()))");
+    eq(ev("JSON.stringify(state)"), before);
+  });
+
+  test("Trends says how many are from Penn", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 90)[0], { company: "UPenn", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 91)[0], { company: "", school: "" }));
+    await boot(s, { ver: "x" });
+    T.click('[data-act="opensettings"]');
+    T.click('[data-act="opentrends"]');
+    assert(/1 of 2 are from Penn/.test(T.text()));
+  });
+
+  /* ================= contacts file, duplicates (v9.9) ================= */
+
+  /* A fake vCard file shaped like an iPhone/iCloud export: folded lines,
+     item1. prefixes, several emails, a photo, repeated cards. */
+  function fakeVcf() {
+    function card(lines) { return "BEGIN:VCARD\r\nVERSION:3.0\r\nPRODID:-//Apple Inc.//iPhone OS 18.0//EN\r\n" + lines.join("\r\n") + "\r\nEND:VCARD\r\n"; }
+    var photo = "PHOTO;ENCODING=b;TYPE=JPEG:" + new Array(40).join("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo") ;
+    var folded = photo.match(/.{1,74}/g).join("\r\n ");
+    return [
+      card(["N:Stone;Avery;;;", "FN:Avery Stone", "TEL;type=CELL;type=VOICE;type=pref:(215) 555-0101",
+            "EMAIL;type=INTERNET;type=HOME:avery.home@example.com", "item1.EMAIL;type=INTERNET:astone@sas.upenn.edu",
+            "item1.X-ABLabel:school", folded]),
+      card(["N:Rivers;Blake;;;", "FN:Blake Rivers", "TEL;type=CELL:+1 215-555-0102",
+            "EMAIL;type=INTERNET:brivers@wharton.upenn.edu"]),
+      // the same person again, number formatted differently: one row
+      card(["N:Rivers;Blake;;;", "FN:Blake Rivers", "TEL;type=HOME:2155550102", "NOTE:met at\\, the GBM"]),
+      card(["N:Field;Casey;;;", "FN:Casey Field", "TEL;type=CELL:215.555.0103"]),
+      // no FN, only N
+      card(["N:Marsh;Devon;J;;", "TEL;type=CELL:215-555-0104", "EMAIL:dmarsh@seas.upenn.edu"]),
+      // long name folded onto the next line
+      card(["N:Hill;Emery;;;", "FN:Emery Hill-Vandenberg", " -Smith", "TEL:215-555-0105"]),
+      // no name at all: skipped
+      card(["N:;;;;", "TEL:215-555-0199"])
+    ].join("");
+  }
+
+  test("vCard: folded lines, item prefixes, N without FN, photos skipped, Penn email preferred", async function () {
+    await boot(null);
+    var rows = ev("parseVCF(" + JSON.stringify(fakeVcf()) + ").map(function (c) { return [c.name, c.phone, c.email, c.notes, isPenn(c)]; })");
+    eq(rows, [
+      ["Avery Stone", "(215) 555-0101", "astone@sas.upenn.edu", "", true],
+      ["Blake Rivers", "+1 215-555-0102", "brivers@wharton.upenn.edu", "", true],
+      ["Blake Rivers", "2155550102", "", "met at, the GBM", false],
+      ["Casey Field", "215.555.0103", "", "", false],
+      ["Devon J Marsh", "215-555-0104", "dmarsh@seas.upenn.edu", "", true],
+      ["Emery Hill-Vandenberg-Smith", "215-555-0105", "", "", false]
+    ]);
+  });
+
+  test("same person: name, email, first+last, or phone with a matching name; a shared family number alone is not enough", async function () {
+    await boot(null);
+    function same(a, b) { return ev("samePerson(" + JSON.stringify(a) + "," + JSON.stringify(b) + ")"); }
+    eq(same({ name: "Sam Lee" }, { name: "sam  lee" }), true);
+    eq(same({ name: "Sam J. Lee" }, { name: "Sam Lee" }), true);
+    eq(same({ name: "Sam Lee", email: "S@x.com" }, { name: "Samuel Lee", email: "s@x.com" }), true);
+    eq(same({ name: "Sam Lee", phone: "(215) 555-0100" }, { name: "Sammy Lee", phone: "+1 215 555 0100" }), true);
+    eq(same({ name: "Sam Lee", phone: "215-555-0100" }, { name: "Mom", phone: "215-555-0100" }), false);
+    eq(same({ name: "Sam Lee", phone: "215-555-0100" }, { name: "Jordan Park", phone: "215-555-0100" }), false);
+    eq(same({ name: "Sam Lee" }, { name: "Sam Park" }), false);
+    eq(same({ name: "Sam J Lee" }, { name: "Sam K Lee" }), false, "different middle initials");
+    eq(same({ name: "Sam J Lee" }, { name: "Sam Jordan Lee" }), true);
+    eq(same({ name: "Lab 1 North Room" }, { name: "Lab 2 North Room" }), false, "numbered entries");
+    eq(same({ name: "Sam Lee", phone: "215-555-0100" }, { name: "Jo Lee", phone: "215-555-0100" }), false, "siblings on a family number");
+    eq(same({ name: "Sam Lee", phone: "215-555-0100" }, { name: "Sam", phone: "215-555-0100" }), true);
+    eq(same({ name: "José Núñez" }, { name: "Jose Nunez" }), true);
+  });
+
+  test("contacts file: repeats combined, people already here filled not added, Penn-only button adds only Penn", async function () {
+    var s = FNFake.makeState(0, 1);
+    // Casey already here as Close with no phone; must keep Close and gain the phone.
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 200)[0], { id: "casey", name: "Casey Field", tier: "Close", phone: "", email: "", company: "", school: "", notes: "roommate", potential: "Strong" }));
+    // A parent who shares Devon's number must not be matched to Devon.
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 201)[0], { id: "mom", name: "Mom", tier: "Close", phone: "215-555-0104", email: "", company: "", school: "", notes: "" }));
+    await boot(s, { ver: "x" });
+    await importFile(fakeVcf(), "All Contacts.vcf");
+    var t = T.text();
+    assert(/1 repeated card was combined/.test(t), "file repeats not reported: " + t.slice(0, 300));
+    assert(/4 new people/.test(t) && /3 from Penn/.test(t), t.slice(0, 400));
+    assert(/1 already here: 1 get empty fields filled in/.test(t), t.slice(0, 500));
+    T.click('[data-act="pvquickpenn"]');
+    var names = ev("state.contacts.map(function (c) { return c.name; }).sort()");
+    eq(names, ["Avery Stone", "Blake Rivers", "Casey Field", "Devon J Marsh", "Mom"]);
+    eq(ev("state.contacts.filter(function (c) { return c.name === 'Blake Rivers'; }).length"), 1, "Blake added twice");
+    eq(ev("byId('blank')"), null);
+    var casey = ev("byId('casey')");
+    eq([casey.tier, casey.potential, casey.phone, casey.notes], ["Close", "Strong", "215.555.0103", "roommate"]);
+    eq(ev("byId('mom').email"), "", "the parent was matched to Devon");
+    var blake = ev("state.contacts.filter(function (c) { return c.name === 'Blake Rivers'; })[0]");
+    eq([blake.email, blake.notes, blake._phones], ["brivers@wharton.upenn.edu", "met at, the GBM", undefined]);
+    eq(ev("state.contacts.filter(function (c) { return c.importBatchId; }).every(isPenn)"), true);
+    assert(/left out 1 not from Penn/.test(T.$("#toast").innerText), T.$("#toast").innerText);
+    // undo removes the three and gives Casey back their empty phone
+    T.click('[data-act="undoimport"]');
+    eq(ev("state.contacts.length"), 2);
+    eq(ev("byId('casey').phone"), "");
+  });
+
+  test("contacts file: 'Add all' brings in everyone new; importing the same file again adds nobody", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    await importFile(fakeVcf(), "c.vcf");
+    T.click('[data-act="pvquick"]');
+    eq(ev("state.contacts.length"), 5);
+    await importFile(fakeVcf(), "c.vcf");
+    assert(/0 new people/.test(T.text()) && /5 already here, nothing new to add/.test(T.text()), T.text().slice(0, 400));
+    assert(!T.$('[data-act="pvquick"]') && !T.$('[data-act="pvquickpenn"]'), "offered to add or fill when nothing changes");
+    T.click('[data-act="pvcancel"]');
+    eq(ev("state.contacts.length"), 5);
+  });
+
+  test("Penn from email: an upenn.edu address marks someone as Penn", async function () {
+    await boot(null);
+    eq(ev("[pennMail('a@sas.upenn.edu'), pennMail('b@wharton.upenn.edu'), pennMail('c@upenn.edu'), pennMail('d@gmail.com'), pennMail('e@upenn.edu.evil.com'), pennMail('f@notupenn.edu')]"),
+       [true, true, true, false, false, false]);
+    eq(ev("isPenn({ name: 'X', email: 'x@nursing.upenn.edu' })"), true);
+  });
+
+  test("Duplicates screen: finds people saved twice, merge keeps the closest tier and everything typed, undo restores", async function () {
+    var s = FNFake.makeState(0, 1);
+    function p(o) { return Object.assign(FNFake.makeContacts(1, Math.floor(Math.random() * 1e6))[0], { company: "", school: "", notes: "", email: "", interactions: [], lastContact: "", tierLog: [], potential: "" }, o); }
+    s.contacts.push(p({ id: "a1", name: "Sam Lee", tier: "Acquaintance", phone: "215-555-0110", notes: "from NSO", interactions: ["2026-09-01"] }));
+    s.contacts.push(p({ id: "a2", name: "Sam Lee", tier: "Middle", phone: "", email: "slee@sas.upenn.edu", notes: "geo club", potential: "Strong", interactions: ["2026-10-01"] }));
+    s.contacts.push(p({ id: "b1", name: "Jo Park", tier: "Close", phone: "215-555-0120" }));
+    s.contacts.push(p({ id: "b2", name: "Mom", tier: "Close", phone: "215-555-0120" }));
+    s.contacts.push(p({ id: "c1", name: "Kai Reed", tier: "Acquaintance", phone: "215-555-0130" }));
+    await boot(s, { ver: "x" });
+    eq(ev("dupeGroups().map(function (g) { return g.map(function (c) { return c.id; }).sort(); })"), [["a1", "a2"]]);
+    T.click('[data-act="opensettings"]');
+    T.click('[data-act="opendupes"]');
+    assert(/1 person is saved more than once/.test(T.text()), T.text().slice(0, 300));
+    T.click('[data-act="mergegroup"]');
+    eq(ev("state.contacts.length"), 4);
+    var m = ev("byId('a2')");
+    eq([m.tier, m.potential, m.phone, m.email, m.notes, m.interactions], ["Middle", "Strong", "215-555-0110", "slee@sas.upenn.edu", "geo club · from NSO", ["2026-09-01", "2026-10-01"]]);
+    eq(ev("state.deleted.map(function (d) { return d.id; })"), ["a1"]);
+    assert(/No duplicates/.test(T.text()));
+    T.click('[data-act="undomerge"]');
+    eq(ev("state.contacts.length"), 5);
+    eq(ev("byId('a2').phone"), "");
+    eq(ev("state.deleted.length"), 0);
+  });
+
+  test("Merge all, at scale: 1,000 fake people with 40 planted duplicates", async function () {
+    var s = FNFake.makeState(1000, 55);
+    for (var i = 0; i < 40; i++) {
+      var orig = s.contacts[i * 20];
+      s.contacts.push(Object.assign({}, orig, { id: "dup" + i, tier: "Acquaintance", interactions: [], tierLog: [], notes: "second copy " + i, potential: "" }));
+    }
+    await boot(s, { ver: "x" });
+    var before = ev("dupeGroups().length");
+    assert(before >= 40, "found " + before);
+    var tiers = {};
+    s.contacts.slice(0, 1000).forEach(function (c) { tiers[c.id] = c.tier; });
+    T.click('[data-act="opensettings"]');
+    T.click('[data-act="opendupes"]');
+    T.click('[data-act="mergeall"]');
+    eq(ev("dupeGroups().length"), 0);
+    // no tier was lowered: every kept person is at least as close as before
+    var rank = { Close: 4, Middle: 3, Acquaintance: 2, Networking: 1 };
+    var lowered = ev("state.contacts").filter(function (c) { return tiers[c.id] && rank[c.tier] < rank[tiers[c.id]]; });
+    eq(lowered.length, 0);
+    eq(ev("state.contacts.filter(function (c) { return /second copy/.test(c.notes); }).length"), 40, "notes from the second copy were lost");
+  });
+
+  test("Penn only is remembered between opens", async function () {
+    var s = FNFake.makeState(30, 3);
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    T.click('[data-act="pennonly"]');
+    await boot(null, { keep: true });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    assert(T.$('[data-act="pennonly"]').classList.contains("on"), "not remembered");
+    assert(T.$$(".row").every(function (r) { return r.querySelector(".tag.pn"); }), "a non-Penn row is showing");
+  });
+
   /* ================= import and bulk moves (v9.3) ================= */
 
   test("import: one tap adds everyone as Acquaintance; existing and file tiers win; undo removes exactly the batch", async function () {

@@ -572,3 +572,17 @@ details.more > summary::-webkit-details-marker { display: none; }
   border: 1px solid rgba(251,191,36,.45); background: rgba(251,191,36,.08); color: #fde68a;
 }
 .warnbox strong { display: block; margin-bottom: 3px; color: #fcd34d; }
+
+/* ---- v9.9: Penn ---- */
+.tag.pn { background: rgba(153,0,0,.24); color: #fecaca; border: 1px solid rgba(220,38,38,.35); font-weight: 600; letter-spacing: .02em; }
+.chip.pennchip.on { background: rgba(153,0,0,.28); border-color: rgba(220,38,38,.55); color: #fee2e2; }
+.caprow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.btn-ghost.pennf.on { border-color: rgba(220,38,38,.55); color: #fecaca; background: rgba(153,0,0,.18); }
+.btn-ghost.pennf .n { opacity: .6; margin-left: 2px; }
+.dupegroup { padding: 12px 14px; }
+.duperow { display: flex; flex-direction: column; padding: 6px 0; border-bottom: 1px solid var(--surface-2); }
+.duperow:last-of-type { border-bottom: none; }
+.duperow .t { font-weight: 500; }
+.duperow .d { font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
+.keeps { font-size: 11px; font-weight: 600; color: #86efac; border: 1px solid rgba(74,222,128,.4); border-radius: 5px; padding: 1px 6px; margin-left: 6px; }
+h3 .tag.pn { font-size: 12px; vertical-align: 2px; margin-left: 6px; }

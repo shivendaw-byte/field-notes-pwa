@@ -20,6 +20,10 @@ The idea behind it: a contact list tells you who you know. Field Notes tells you
 
 **Tags.** Type a word with `#` in anyone's notes (`#geoclub`, `#hall`). Tiering -> Tag shows each group. To tag many people at once: Select -> tick people -> + Tag.
 
+**Penn.** Everyone whose company, school or email says Penn (University of Pennsylvania, UPenn, Wharton, Perelman, any upenn.edu address) gets a Penn badge automatically; Penn State and lookalikes do not. Open a person and tap "From Penn" to override. The Add card has a "From Penn" toggle that starts on, remembers when you turn it off, and switches on by itself when you type Penn. "Penn only" above any list shows just Penn people, in any tier.
+
+**Duplicates.** Settings -> Clean up -> Duplicates lists anyone saved more than once. Merging keeps the closest tier, all notes and all logged conversations, and has Undo. Two records count as the same person when they share a full name, an email, or first and last name (with no conflicting middle name), or a phone number plus the same first name. A shared number alone never merges people, so family members on one line stay separate.
+
 **Breaks.** Around Thanksgiving, winter break, spring break and summer, the Reach tab lists rated Close and Middle people whose city is not Philadelphia. At the start of a semester it lists rated people you added last term and have not logged. Dates follow the Penn calendar. A prompt with nobody to show does not appear.
 
 **Discreet mode.** Tap the "Field Notes" title to hide tier names and ratings. Tap again to show them.
@@ -31,6 +35,7 @@ The idea behind it: a contact list tells you who you know. Field Notes tells you
 - Stored in this browser on this device (`localStorage`). The app ships with no contacts in it.
 - **Back up:** Settings -> Backup -> "Save a full backup" writes a JSON file that restores everything exactly. CSV export is for spreadsheets.
 - **Import:** Settings -> Backup -> choose a CSV, VCF or backup file. One tap adds everyone new as Acquaintance. People already in the app keep their tier.
+- **Contacts file from your phone** (`.vcf`): repeated cards are combined, people already here are not added again (only their empty fields are filled in), and "Add the Penn people" brings in just the new Penn ones. Contact files are in `.gitignore`; never commit one.
 - **Updates** keep your data. Before a new version first runs, the app saves a copy of the data as it was; Settings -> About -> "Go back to that copy" restores it.
 - Bulk actions (import, move, tag, delete) all have Undo.
 

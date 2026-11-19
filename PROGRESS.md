@@ -36,12 +36,18 @@ One entry per release. Newest last.
 - Shipped: first-run "Start with one person" card; phone, email and passphrase boxes full height; Call and Email as proper buttons; accessible names on every input and pressed state on chips; backup reminder moved below the capture box and now saves a full backup; fixed the dead "Back to settings" button on Trends; README rewritten; CHANGELOG added.
 - Tests: 51 of 51 pass, including new first-run and accessibility checks (every field named, every control at least 40px tall).
 - Update path, tested for real with a service worker on a local server and 955 fake people:
-  - v9.3 installed -> v9.8 files swapped in -> one reopen: the app reloaded itself, showed "Updated to v9.8", data identical, rollback copy of all 955 kept, old cache removed.
+  - v9.3 installed -> v9.8 files swapped in -> one reopen: the app reloaded itself, showed "Updated to v9.9", data identical, rollback copy of all 955 kept, old cache removed.
   - v9.7 installed -> v9.8 swapped in -> app resumed without a page load (as an installed app does): same result.
 - Never-homework review: nothing new is required anywhere. Capture needs a name only. Promises, tags, tier and potential are optional. Break prompts and the "further out" list appear only when they have someone to show and never raise the reminder card. The only recurring ask left is the 30-day backup reminder, kept on purpose because the data lives on one device (it no longer sits above the capture box).
 - Deploy v9.8: commit `a159b91`. Both production sites confirmed on `APP_VERSION 9.8`, cache `field-notes-v27`; every deployed file matches the repo byte for byte.
 
+## v9.9 — Penn and duplicates (2026-11-19)
+- Shipped: Penn badge worked out from company, school or upenn.edu email; "From Penn" toggle on the Add card (starts on, remembered, switches on when you type Penn) and on every contact; "Penn only" filter, remembered; robust vCard import with in-file combining, matching of people already here that fills blanks only, and an "Add the Penn people" button; Duplicates screen with merge, merge all and undo; import undo now restores filled fields.
+- Tests: 67 of 67 pass. New tests cover Penn detection (12 Penn names, 15 lookalikes), the toggle and its memory, vCard quirks, the same-person rule (siblings on a family number, middle initials, numbered entries), Penn-only import with undo, merging at 1,000 people with 40 planted duplicates, and that no tier is ever lowered.
+- Dry run on the real files, on this computer only (counts only; private copies deleted afterwards): 955 people loaded earlier, 653 already show as Penn; 36 people saved twice (37 extra records); the contacts file has 1,926 named cards, 88 repeats combined into 1,838 people; 832 already in the app; 200 new from Penn; 806 new and not Penn. After "Add the Penn people": 1,155 people, 853 from Penn, no new duplicates. Parsing the 30 MB file took 0.36 s on the laptop.
+- A first version of the same-person rule would have merged four separate numbered entries and could have merged siblings on a family number. Both are fixed and covered by tests.
+
 ## Where things stand
-- Live version: **9.8** on https://field-notes-two-blond.vercel.app and https://field-notes-pwa-gules.vercel.app.
-- On your phone: open the app once. It reloads itself and shows "Updated to v9.8". Check the bottom of the Add tab.
+- Live version: **9.9** on https://field-notes-two-blond.vercel.app and https://field-notes-pwa-gules.vercel.app.
+- On your phone: open the app once. It reloads itself and shows "Updated to v9.9". Check the bottom of the Add tab.
 - Open: real Upstash sync test (DECISIONS.md 11). Suggested: delete the Vercel project you do not use (DECISIONS.md 1).

@@ -49,7 +49,9 @@
         potential: tier === "Acquaintance" && r() < 0.8 ? "" : pick(POTS),
         company: pick(COMPANIES), school: pick(SCHOOLS), location: pick(CITIES), locationConfirmed: "",
         notes: (r() < 0.3 ? "Met at an event. " : "") + tag,
-        phone: r() < 0.85 ? "215-555-01" + ("0" + (i % 100)).slice(-2) : "",
+        // 555 exchange: never a real personal number. Unique per person, so the
+        // only duplicates in a fake set are the ones a test plants on purpose.
+        phone: r() < 0.85 ? "215-555-" + ("000" + i).slice(-4) : "",
         email: r() < 0.3 ? "person" + i + "@example.com" : "",
         pending: false, added: r() < 0.1 ? iso(Math.floor(r() * 90)) : "",
         interactions: hist, lastContact: hist.length ? hist[hist.length - 1] : "",
