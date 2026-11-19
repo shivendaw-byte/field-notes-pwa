@@ -46,6 +46,7 @@ One entry per release. Newest last.
 - Tests: 67 of 67 pass. New tests cover Penn detection (12 Penn names, 15 lookalikes), the toggle and its memory, vCard quirks, the same-person rule (siblings on a family number, middle initials, numbered entries), Penn-only import with undo, merging at 1,000 people with 40 planted duplicates, and that no tier is ever lowered.
 - Dry run on the real files, on this computer only (counts only; private copies deleted afterwards): 955 people loaded earlier, 653 already show as Penn; 36 people saved twice (37 extra records); the contacts file has 1,926 named cards, 88 repeats combined into 1,838 people; 832 already in the app; 200 new from Penn; 806 new and not Penn. After "Add the Penn people": 1,155 people, 853 from Penn, no new duplicates. Parsing the 30 MB file took 0.36 s on the laptop.
 - A first version of the same-person rule would have merged four separate numbered entries and could have merged siblings on a family number. Both are fixed and covered by tests.
+- Deploy v9.9: commit `c50ea6e`. Both production sites confirmed on `APP_VERSION 9.9`, cache `field-notes-v28`; live app.js matches the repo byte for byte.
 
 ## Where things stand
 - Live version: **9.9** on https://field-notes-two-blond.vercel.app and https://field-notes-pwa-gules.vercel.app.
