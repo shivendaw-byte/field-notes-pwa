@@ -1,5 +1,8 @@
 # Changelog
 
+## 9.11 — 2026-11-19
+- Clearer Penn line under the From Penn button ("Saved in School as Penn.").
+
 ## 9.10 — 2026-11-19 — Penn in School, Family
 - Penn is saved in the School field, the way the first 648 were. Turning Penn on writes "Penn" into an empty School; a School that names somewhere else is kept and the person is marked Penn on top. Turning it off clears a plain "Penn".
 - On the first open of 9.10, anyone whose name, company or email says Penn, or who was marked Penn, gets "Penn" in an empty School. Nothing else changes, and the copy from before the update is kept.

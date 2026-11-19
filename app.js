@@ -95,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.10";
+  var APP_VERSION = "9.11";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -359,7 +359,7 @@
   function pennWhy(c) {
     if (c.penn === true) return "Marked by you.";
     if (c.penn === false) return "Marked not Penn by you.";
-    if (pennText(c.school)) return "School: " + c.school + ".";
+    if (pennText(c.school)) return "Saved in School as " + c.school + ".";
     if (pennText(c.company)) return "Worked out from the company: " + c.company + ".";
     if (pennMail(c.email)) return "Worked out from the Penn email address.";
     if (pennName(c.name)) return "Worked out from the name.";
@@ -608,7 +608,7 @@
         (on ? "\u2713 From Penn" : "From Penn") + "</button>" +
       '<button class="chip famchip' + (fam ? " on" : "") + '" data-act="togglefamily" data-id="' + c.id + '">' +
         (fam ? "\u2713 Family" : "Family") + "</button></div>" +
-      '<p class="hint" style="margin:6px 0 0">Penn: ' + esc(pennWhy(c)) + "</p></div>";
+      '<p class="hint" style="margin:6px 0 0">' + (isPenn(c) || c.penn === false ? "Penn: " + esc(pennWhy(c)) : "Not marked Penn.") + "</p></div>";
   }
 
   /* ============================================================
