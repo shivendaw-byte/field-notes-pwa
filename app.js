@@ -95,7 +95,7 @@
     return setting("showSub", "on") === "on" ? '<p class="sub">' + text + "</p>" : "";
   }
 
-  var APP_VERSION = "9.9";
+  var APP_VERSION = "9.10";
   /* Test mode exists only on a local dev server with ?fntest=1. It uses its
      own storage key so the test suite can never read or write real contacts. */
   var TEST = /[?&]fntest=1/.test(location.search) &&
@@ -122,6 +122,8 @@
   var qDraft = { tier: "Acquaintance", potential: "" };
   var qOpen = false;          // "More details" on the Add tab
   var qPenn = null;           // Penn toggle on the Add card; null = use the remembered default
+  var qFamily = false;        // Family toggle on the Add card; resets after each save
+  var lastMark = null;        // undo for Select -> + Penn / + Family
   var pennOnly = false;       // "Penn only" filter on the contact lists
   var lastAdded = null;       // id of the person just captured, for the follow-up card
   var dupeOk = "";            // name the user confirmed adding twice
@@ -242,6 +244,21 @@
       if (!c.updatedAt) c.updatedAt = nowISO();
       if (!c.id) c.id = uid();
     });
+    /* v9.10, once: Penn lives in School. Anyone whose company, email or name
+       says Penn, or who was marked Penn, gets "Penn" in an empty School.
+       A School that already names somewhere is never overwritten, and
+       anyone marked "not Penn" is left alone. */
+    if (!s.settings.pennInSchool) {
+      s.contacts.forEach(function (c) {
+        if (c.penn === false || String(c.school || "").trim()) return;
+        if (c.penn === true || detectPenn(c)) {
+          c.school = "Penn";
+          delete c.penn;
+          c.updatedAt = nowISO();
+        }
+      });
+      s.settings.pennInSchool = true;
+    }
     return s;
   }
 
@@ -329,21 +346,48 @@
   /* Any upenn.edu address: sas., wharton., seas., engineering., nursing. ... */
   var PENN_MAIL_RE = /@([a-z0-9-]+\.)*upenn\.(edu|com)$/i;
   function pennMail(v) { return !!v && PENN_MAIL_RE.test(String(v).trim()); }
-  function detectPenn(c) { return pennText(c.school) || pennText(c.company) || pennMail(c.email); }
+  /* Phone contacts often carry the place in the name: "Sam Lee Penn",
+     "Sam Lee Wharton", "Sam Lee - Penn '28". A Penn word anywhere after the
+     first word counts. A first word of "Penn" is a first name (Penn Badgley). */
+  var PENN_NAME_RE = /(^|[^a-z])(u\.?\s?penn|penn|wharton)([^a-z]|$)/i;
+  function pennName(n) {
+    var rest = String(n || "").trim().replace(/^\S+\s*/, "");
+    return !!rest && PENN_NAME_RE.test(rest) && !NOT_PENN_RE.test(rest);
+  }
+  function detectPenn(c) { return pennText(c.school) || pennText(c.company) || pennMail(c.email) || pennName(c.name); }
   function isPenn(c) { return c.penn === true || (c.penn !== false && detectPenn(c)); }
   function pennWhy(c) {
     if (c.penn === true) return "Marked by you.";
-    if (c.penn === false) return "Marked not Penn by you" + (detectPenn(c) ? ", although the " + (pennText(c.school) ? "school" : pennText(c.company) ? "company" : "email") + " looks like Penn." : ".");
+    if (c.penn === false) return "Marked not Penn by you.";
+    if (pennText(c.school)) return "School: " + c.school + ".";
     if (pennText(c.company)) return "Worked out from the company: " + c.company + ".";
-    if (pennText(c.school)) return "Worked out from the school: " + c.school + ".";
     if (pennMail(c.email)) return "Worked out from the Penn email address.";
+    if (pennName(c.name)) return "Worked out from the name.";
     return "Nothing saved says Penn.";
   }
-  /* One tap flips it. If the new answer matches what the company or school
-     already says, the override is dropped so the record stays clean. */
-  function togglePenn(c) {
-    var want = !isPenn(c);
-    if (want === detectPenn(c)) delete c.penn; else c.penn = want;
+  /* Penn lives in the School field, the way the first 648 were saved. Turning
+     it on writes "Penn" into an empty School; if School already names
+     somewhere else, that is kept and the person is marked Penn on top.
+     Turning it off clears a School of plain "Penn" and, if the name, company
+     or email still says Penn, marks the person as not Penn. */
+  var PLAIN_PENN_RE = /^\s*(u\.?\s?penn|penn|upenn|university of pennsylvania)\s*$/i;
+  function setPenn(c, on) {
+    if (on) {
+      if (!String(c.school || "").trim()) c.school = "Penn";
+      if (pennText(c.school)) delete c.penn; else c.penn = true;
+    } else {
+      if (PLAIN_PENN_RE.test(c.school || "")) c.school = "";
+      if (detectPenn(c)) c.penn = false; else delete c.penn;
+    }
+    touch(c);
+  }
+  function togglePenn(c) { setPenn(c, !isPenn(c)); }
+
+  /* Family is a mark you set yourself, never guessed: phone names like
+     "Sam Lee Mom" usually mean a friend's mother. */
+  function isFamily(c) { return c.family === true; }
+  function setFamily(c, on) {
+    if (on) c.family = true; else delete c.family;
     touch(c);
   }
   function capturePennDefault() {
@@ -354,7 +398,7 @@
 
   function haystack(c) {
     // Notes are searched whole, so chip text is found by ordinary search.
-    return [c.name, c.company, c.school, c.location, c.potential, c.notes, c.tier, isPenn(c) ? "Penn" : ""]
+    return [c.name, c.company, c.school, c.location, c.potential, c.notes, c.tier, isPenn(c) ? "Penn" : "", isFamily(c) ? "Family" : ""]
       .filter(Boolean).join(" ");
   }
   function searchContacts(list, q) {
@@ -497,6 +541,7 @@
             tierBadge(c.tier) +
             /* "University of Pennsylvania" in the company becomes one short
                Penn badge; the full text is still in the open row. */
+            (isFamily(c) ? '<span class="tag fam">Family</span>' : "") +
             (isPenn(c) ? '<span class="tag pn">Penn</span>' : "") +
             (c.company && !(isPenn(c) && pennText(c.company)) ? '<span class="tag co">' + esc(c.company) + "</span>" : "") +
             (c.school && !(isPenn(c) && pennText(c.school)) ? '<span class="tag sc">' + esc(c.school) + "</span>" : "") +
@@ -554,12 +599,16 @@
       "</div>") + "</div>";
   }
 
+  /* The two marks, side by side, on every place a person can be edited:
+     the open row, the card after adding, and the sort queue. */
   function pennChipHTML(c) {
-    var on = isPenn(c);
-    return '<div class="field"><label class="f">Penn</label><div class="chips">' +
+    var on = isPenn(c), fam = isFamily(c);
+    return '<div class="field"><label class="f">Marks</label><div class="chips">' +
       '<button class="chip pennchip' + (on ? " on" : "") + '" data-act="togglepenn" data-id="' + c.id + '">' +
-        (on ? "\u2713 From Penn" : "From Penn") + "</button></div>" +
-      '<p class="hint" style="margin:6px 0 0">' + esc(pennWhy(c)) + "</p></div>";
+        (on ? "\u2713 From Penn" : "From Penn") + "</button>" +
+      '<button class="chip famchip' + (fam ? " on" : "") + '" data-act="togglefamily" data-id="' + c.id + '">' +
+        (fam ? "\u2713 Family" : "Family") + "</button></div>" +
+      '<p class="hint" style="margin:6px 0 0">Penn: ' + esc(pennWhy(c)) + "</p></div>";
   }
 
   /* ============================================================
@@ -679,7 +728,9 @@
         ? pending
         : tierFilter === "Imported"
           ? justImported()
-          : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
+          : tierFilter === "Family"
+            ? state.contacts.filter(isFamily)
+            : state.contacts.filter(function (c) { return c.tier === tierFilter && !c.pending; });
       heading = tierFilter === "Imported" ? "the last import" : tierFilter;
     } else if (browseBy === "tag") {
       base = groupFilter
@@ -727,7 +778,12 @@
         return '<button class="filter' + (tierFilter === t ? " on" : "") + '" data-act="filter" data-val="' + t + '" title="' + t + '">' + tierLabel(t) + '<span class="n">' + n + "</span></button>";
       }).join("") + (pending.length
         ? '<button class="filter' + (tierFilter === "Unsorted" ? " on" : "") + '" data-act="filter" data-val="Unsorted">Unsorted<span class="n">' + pending.length + "</span></button>"
-        : "") + (justImported().length
+        : "") +
+        /* Family is its own list, across every tier. Always shown, so there is
+           somewhere obvious to look even before anyone is marked. */
+        '<button class="filter famfilter' + (tierFilter === "Family" ? " on" : "") + '" data-act="filter" data-val="Family">Family<span class="n">' +
+          state.contacts.filter(isFamily).length + "</span></button>" +
+        (justImported().length
         ? '<button class="filter' + (tierFilter === "Imported" ? " on" : "") + '" data-act="filter" data-val="Imported">Just imported<span class="n">' + justImported().length + "</span></button>"
         : "");
     } else {
@@ -807,7 +863,9 @@
         ? '<div class="cleanbar movebar"><span class="hint" style="margin:0">Move ' + Object.keys(selected).length + " to</span>" +
             '<div class="chips">' + TIERS.map(function (t) {
               return '<button class="chip" data-t="' + t + '" data-act="selmove" data-val="' + t + '">' + tierLabel(t) + "</button>";
-            }).join("") + '<button class="chip" data-act="seltag">+ Tag</button>' + "</div></div>"
+            }).join("") + '<button class="chip" data-act="seltag">+ Tag</button>' +
+              '<button class="chip pennchip" data-act="selmark" data-val="penn">+ Penn</button>' +
+              '<button class="chip famchip" data-act="selmark" data-val="family">+ Family</button>' + "</div></div>"
         : "");
   }
 
@@ -1410,7 +1468,13 @@
     else if (ff && !has(inf, ff, " / ")) set("followUp", inf + " / " + ff);
     if (potLevel(from.potential) > potLevel(into.potential)) set("potential", from.potential);
     if (into.penn === undefined && from.penn !== undefined) set("penn", from.penn);
-    else if (into.penn === undefined && pennMail(from.email) && !detectPenn(into)) set("penn", true);
+    // Any sign of Penn on the incoming copy lands in an empty School.
+    if (into.penn !== false && !String(into.school || "").trim() &&
+        (from.penn === true || pennText(from.school) || pennText(from.company) || pennMail(from.email) || pennName(from.name))) {
+      set("school", "Penn");
+      if (into.penn === true) set("penn", undefined);
+    }
+    if (from.family === true && into.family !== true) set("family", true);
     var hist = dedupeDates((into.interactions || []).concat(from.interactions || []));
     if (hist.length !== (into.interactions || []).length) {
       set("interactions", hist);
@@ -1530,6 +1594,7 @@
       '<div class="card"><h3>' + newRows.length + " new " + (newRows.length === 1 ? "person" : "people") +
         (pennNew ? ' <span class="tag pn">' + pennNew + " from Penn</span>" : "") + "</h3>" +
         '<p class="note">' +
+          (pennNew ? "The " + pennNew + " from Penn (by email, name or company) get School: Penn. " : "") +
           (newRows.length ? (newRows.length - keepN) + " go to Acquaintance" + (keepN ? " \u00b7 " + keepN + " keep the tier from the file" : "") + ". " : "") +
           (dupes ? dupes + " already here" + (P.dupeMode === "skip" ? ", left as they are. "
               : fills ? ": " + fills + " get empty fields filled in. Nothing you typed and no tier changes. " : ", nothing new to add. ") : "") +
@@ -1704,7 +1769,8 @@
       "</div>" +
 
       '<h3 class="logsec">Your circle</h3><div class="card balance">' + balance +
-        '<p class="hint" style="margin:8px 0 0">' + active.filter(isPenn).length + " of " + active.length + " are from Penn.</p></div>" +
+        '<p class="hint" style="margin:8px 0 0">' + active.filter(isPenn).length + " of " + active.length + " are from Penn" +
+          (active.filter(isFamily).length ? ", " + active.filter(isFamily).length + " are family" : "") + ".</p></div>" +
 
       (month.length
         ? '<h3 class="logsec">Talked to this month <span class="n">' + month.length + "</span></h3><div class=\"loglist\">" +
@@ -1856,7 +1922,9 @@
         '<p class="hint" style="margin:8px 0 0">Name, then where you met if you like. Enter saves. Nothing else is needed.</p>' +
         '<div class="field caprow"><button class="chip pennchip' + (qPennOn() ? " on" : "") + '" id="qPenn" data-act="qpenn">' +
           (qPennOn() ? "\u2713 From Penn" : "From Penn") + "</button>" +
-          '<span class="hint" style="margin:0">' + (qPennOn() ? "On for everyone you add until you turn it off" : "Off. Turns on by itself if you type Penn or Wharton") + "</span></div>" +
+          '<button class="chip famchip' + (qFamily ? " on" : "") + '" id="qFamily" data-act="qfamily">' +
+          (qFamily ? "\u2713 Family" : "Family") + "</button></div>" +
+        '<p class="hint" id="qPennHint" style="margin:6px 0 0">' + capturePennHint() + "</p>" +
         '<div class="field"><button class="btn" data-act="quickadd">Save</button></div>' +
         '<details class="more"' + (qOpen ? " open" : "") + ' id="qMore"><summary>More details</summary>' +
           '<div class="field"><label class="f">Tier</label><div class="chips" id="qTier">' +
@@ -1886,6 +1954,7 @@
           : '<span class="queue-pos">' + (queueIndex + 1) + " of " + pending.length + "</span>" +
             '<div class="queue-name">' + esc(cur.name) + "</div>" +
             (cur.notes ? '<p class="note">' + esc(cur.notes) + "</p>" : "") +
+            pennChipHTML(cur) +
             '<div class="field grid2">' +
               '<div><label class="f">Company</label><input type="text" value="' + esc(cur.company) + '" data-act="setco" data-id="' + cur.id + '" placeholder="Optional"></div>' +
               '<div><label class="f">School</label><input type="text" value="' + esc(cur.school) + '" data-act="setsc" data-id="' + cur.id + '" placeholder="Optional"></div>' +
@@ -2271,6 +2340,52 @@
         toast(isPenn(c) ? "Marked " + (c.name || "").split(" ")[0] + " as Penn" : "Marked " + (c.name || "").split(" ")[0] + " as not Penn");
         break;
       }
+      case "togglefamily": {
+        if (!c) break;
+        setFamily(c, !isFamily(c));
+        commit();
+        toast(isFamily(c) ? (c.name || "").split(" ")[0] + " is in Family" : (c.name || "").split(" ")[0] + " is out of Family");
+        break;
+      }
+      case "qfamily": {
+        // Per person: it resets after each save.
+        qFamily = !qFamily;
+        if (qFamily && qPenn === null && capturePennDefault()) qPenn = false;   // family is rarely from Penn
+        else if (!qFamily && qPenn === false && capturePennDefault()) qPenn = null;
+        setCapturePennChip();
+        break;
+      }
+      case "selmark": {
+        var mids = Object.keys(selected);
+        if (!mids.length) break;
+        lastMark = mids.map(function (mid) {
+          var mc = byId(mid);
+          return mc ? { id: mid, school: mc.school, penn: mc.penn, family: mc.family } : null;
+        }).filter(Boolean);
+        lastMark.forEach(function (m) {
+          var mc = byId(m.id);
+          if (val === "penn") setPenn(mc, true); else setFamily(mc, true);
+        });
+        selected = {}; selectMode = false;
+        commit();
+        toast("Marked " + lastMark.length + (val === "penn" ? " as Penn" : " as Family"), "Undo", "undomark");
+        break;
+      }
+      case "undomark": {
+        if (!lastMark) { toast("Nothing to undo"); break; }
+        lastMark.forEach(function (m) {
+          var mc = byId(m.id);
+          if (!mc) return;
+          mc.school = m.school;
+          if (m.penn === undefined) delete mc.penn; else mc.penn = m.penn;
+          if (m.family === undefined) delete mc.family; else mc.family = m.family;
+          touch(mc);
+        });
+        var un2 = lastMark.length; lastMark = null;
+        commit();
+        toast("Put back " + un2);
+        break;
+      }
       case "pennonly":
         pennOnly = !pennOnly; state.settings.pennOnly = pennOnly;
         orderSnapshot = null; listLimit = LIST_STEP; selected = {};
@@ -2518,6 +2633,13 @@
   /* Typing "Penn", "UPenn" or "Wharton" in the capture line switches the
      toggle on for this person. It never switches it off, and it does not
      change the remembered default. */
+  function capturePennHint() {
+    var on = qPennOn(), def = capturePennDefault();
+    var penn = on
+      ? (qPenn === true && !def ? "Penn is on for this person." : "Penn stays on for everyone you add until you turn it off.")
+      : (qFamily && def ? "Penn is off for this family member." : "Penn is off. It turns on by itself if you type Penn or Wharton.");
+    return penn + (qFamily ? " Family is on for this person." : "");
+  }
   function setCapturePennChip() {
     var b = document.getElementById("qPenn");
     if (!b) return;
@@ -2525,9 +2647,14 @@
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", on ? "true" : "false");
     b.textContent = on ? "\u2713 From Penn" : "From Penn";
-    var h = b.nextElementSibling;
-    if (h) h.textContent = on ? (qPenn === true && !capturePennDefault() ? "On for this person" : "On for everyone you add until you turn it off")
-                              : "Off. Turns on by itself if you type Penn or Wharton";
+    var f = document.getElementById("qFamily");
+    if (f) {
+      f.classList.toggle("on", qFamily);
+      f.setAttribute("aria-pressed", qFamily ? "true" : "false");
+      f.textContent = qFamily ? "\u2713 Family" : "Family";
+    }
+    var h = document.getElementById("qPennHint");
+    if (h) h.textContent = capturePennHint();
   }
   document.addEventListener("input", function (e) {
     if (e.target && e.target.id === "qLine" && !qPennOn() && pennText(e.target.value)) {
@@ -2658,13 +2785,14 @@
       notes: [p.context, val("qNotes")].filter(Boolean).join(". "),
       added: today(), tierSince: today()
     });
-    // Toggle on: from Penn. Stored only when the school or company typed
-    // here does not already say so. Toggle off: left to the fields.
-    if ((qPennOn() || pennText(line)) && !detectPenn(c)) c.penn = true;
+    // Toggle on (or the line mentions Penn): "Penn" goes into School.
+    if (qPennOn() || pennText(line)) setPenn(c, true);
+    if (qFamily) c.family = true;
     state.contacts.unshift(c);
     lastAdded = c.id;
     qDraft = { tier: "Acquaintance", potential: "" };
     qPenn = null;
+    qFamily = false;
     commit();
     toast("Added " + p.name);
     focusCapture();
@@ -2730,6 +2858,7 @@
         locationConfirmed: row.locationconfirmed || "",
         followUp: row.followup || "",
         penn: /^(yes|y|true|1)$/i.test(row.penn || "") ? true : /^(no|n|false|0)$/i.test(row.penn || "") ? false : undefined,
+        family: /^(yes|y|true|1)$/i.test(row.family || "") ? true : undefined,
         company: row.company || row.organization || "",
         school: row.school || "",
         location: row.location || row.city || "",
@@ -2876,6 +3005,8 @@
       if (t === "Unsorted") { c.pending = true; c.tier = "Acquaintance"; }
       else { c.pending = false; c.tier = t; }
       delete c._phones; delete c._emails;
+      // Any sign of Penn on a new person is saved as School: Penn.
+      if (c.penn !== false && isPenn(c)) setPenn(c, true);
       c.importBatchId = batch;
       c.importedAt = today();
       touch(c);
@@ -2895,8 +3026,8 @@
   /* What an import may contribute to someone already here. Tier, clock and
      snooze are never on this list. */
   function importable(c) {
-    return { company: c.company, school: c.school, location: c.location, phone: c.phone,
-             email: c.email, notes: c.notes, penn: c.penn, potential: c.potential,
+    return { name: c.name, company: c.company, school: c.school, location: c.location, phone: c.phone,
+             email: c.email, notes: c.notes, penn: c.penn, family: c.family, potential: c.potential,
              interactions: c.interactions, tierLog: c.tierLog };
   }
 
@@ -3037,7 +3168,7 @@
      round-trips the full history. Without these a backup silently loses
      every date you ever logged. */
   function csvString() {
-    var cols = ["name", "tier", "potential", "penn", "company", "school",
+    var cols = ["name", "tier", "potential", "penn", "family", "company", "school",
                 "location", "locationConfirmed", "lastContact", "notes", "followUp", "phone", "email",
                 "interactions", "tierchanges"];
     var lines = [cols.join(",")];
@@ -3046,6 +3177,7 @@
         if (k === "interactions") return csvCell((c.interactions || []).join(";"));
         // Only your overrides are written; blank means "work it out from company/school".
         if (k === "penn") return c.penn === true ? "yes" : c.penn === false ? "no" : "";
+        if (k === "family") return c.family === true ? "yes" : "";
         if (k === "tierchanges") {
           return csvCell((c.tierLog || []).map(function (m) {
             return m.date + ">" + m.from + ">" + m.to;

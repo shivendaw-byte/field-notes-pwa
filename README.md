@@ -20,7 +20,9 @@ The idea behind it: a contact list tells you who you know. Field Notes tells you
 
 **Tags.** Type a word with `#` in anyone's notes (`#geoclub`, `#hall`). Tiering -> Tag shows each group. To tag many people at once: Select -> tick people -> + Tag.
 
-**Penn.** Everyone whose company, school or email says Penn (University of Pennsylvania, UPenn, Wharton, Perelman, any upenn.edu address) gets a Penn badge automatically; Penn State and lookalikes do not. Open a person and tap "From Penn" to override. The Add card has a "From Penn" toggle that starts on, remembers when you turn it off, and switches on by itself when you type Penn. "Penn only" above any list shows just Penn people, in any tier.
+**Penn** is saved in the School field. Everyone whose company, school, email or name says Penn (University of Pennsylvania, UPenn, Wharton, Perelman, any upenn.edu address) gets a Penn badge automatically; Penn State and lookalikes do not. Open a person and tap "From Penn" to override. The Add card has a "From Penn" toggle that starts on, remembers when you turn it off, and switches on by itself when you type Penn. "Penn only" above any list shows just Penn people, in any tier.
+
+**Family.** A mark you set yourself: open a person, the card after adding, or the sort queue, and tap Family; or Select -> + Family for several. Family has its own list next to the tiers and its own badge, and does not change anyone's tier. It is never guessed from names, because phone names like "Sam Lee Mom" usually mean a friend's mother.
 
 **Duplicates.** Settings -> Clean up -> Duplicates lists anyone saved more than once. Merging keeps the closest tier, all notes and all logged conversations, and has Undo. Two records count as the same person when they share a full name, an email, or first and last name (with no conflicting middle name), or a phone number plus the same first name. A shared number alone never merges people, so family members on one line stay separate.
 

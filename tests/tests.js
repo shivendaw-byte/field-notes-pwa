@@ -782,7 +782,7 @@
     eq([wrongYes, wrongNo], [[], []]);
   });
 
-  test("Penn badge comes from the company already saved, without writing anything", async function () {
+  test("Penn from the company is saved into an empty School once; other fields are untouched", async function () {
     var s = FNFake.makeState(0, 1);
     s.contacts.push(Object.assign(FNFake.makeContacts(1, 40)[0], { id: "co", name: "Company Penn", tier: "Acquaintance", company: "University of Pennsylvania", school: "" }));
     s.contacts.push(Object.assign(FNFake.makeContacts(1, 41)[0], { id: "sc", name: "School Penn", tier: "Acquaintance", company: "Acme", school: "Wharton" }));
@@ -796,29 +796,45 @@
     assert(/Penn/.test(row("sc")) && /Acme/.test(row("sc")) && !/Wharton/.test(row("sc")), row("sc"));
     assert(!T.$('.row-head[data-id="ps"] .tag.pn'), "Penn State marked as Penn");
     assert(!T.$('.row-head[data-id="no"] .tag.pn'));
-    eq(JSON.stringify(T.stored().contacts), before, "showing the badge changed stored data");
-    // the full company is still there when the row is open
+    var after = T.stored().contacts;
+    function f(id) { return after.filter(function (c) { return c.id === id; })[0]; }
+    eq([f("co").school, f("co").company], ["Penn", "University of Pennsylvania"], "Penn should be saved in School, company kept");
+    eq(f("sc").school, "Wharton", "a School that already says something is never overwritten");
+    eq([f("ps").school, f("no").school], ["", ""]);
+    eq(JSON.stringify(after.map(function (c) { var x = Object.assign({}, c); delete x.school; delete x.updatedAt; return x; })),
+       JSON.stringify(JSON.parse(before).map(function (c) { var x = Object.assign({}, c); delete x.school; delete x.updatedAt; return x; })),
+       "something other than School changed");
     T.click('.row-head[data-id="co"]');
     eq(T.$('.row-body [data-act="setco"]').value, "University of Pennsylvania");
-    assert(/Worked out from the company/.test(T.$(".row-body").innerText));
+    eq(T.$('.row-body [data-act="setsc"]').value, "Penn");
+    // runs once: a later company edit does not silently write School again
+    ev("byId('no').company = 'UPenn'; save()");
+    await boot(null, { keep: true });
+    eq(ev("byId('no').school"), "");
   });
 
-  test("Penn on a contact: one tap overrides, a second tap goes back to automatic", async function () {
+  test("Penn on a contact: on writes School: Penn, off clears it and holds against the company", async function () {
     var s = FNFake.makeState(0, 1);
-    s.contacts.push(Object.assign(FNFake.makeContacts(1, 50)[0], { id: "co", name: "Company Penn", tier: "Close", company: "UPenn", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 50)[0], { id: "co", name: "Company Person", tier: "Close", company: "UPenn", school: "" }));
     s.contacts.push(Object.assign(FNFake.makeContacts(1, 51)[0], { id: "hm", name: "Home Friend", tier: "Close", company: "", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 52)[0], { id: "dx", name: "Drexel Friend", tier: "Close", company: "", school: "Drexel" }));
     await boot(s, { ver: "x" });
+    eq(ev("byId('co').school"), "Penn");
     T.click('.row-head[data-id="co"]');
     T.click('.row-body [data-act="togglepenn"]');
-    eq(ev("byId('co').penn"), false);
+    eq([ev("byId('co').school"), ev("byId('co').penn")], ["", false]);
     assert(!T.$('.row-head[data-id="co"] .tag.pn'), "badge should go");
     T.click('.row-body [data-act="togglepenn"]');
-    eq(ev("'penn' in byId('co')"), false, "back to automatic should drop the override");
+    eq([ev("byId('co').school"), ev("'penn' in byId('co')")], ["Penn", false]);
     assert(T.$('.row-head[data-id="co"] .tag.pn'));
     T.click('.row-head[data-id="hm"]');
     T.click('.row-body [data-act="togglepenn"]');
-    eq(ev("byId('hm').penn"), true);
-    assert(T.$('.row-head[data-id="hm"] .tag.pn'));
+    eq([ev("byId('hm').school"), ev("'penn' in byId('hm')")], ["Penn", false]);
+    // a School naming somewhere else is kept; Penn is marked on top
+    T.click('.row-head[data-id="dx"]');
+    T.click('.row-body [data-act="togglepenn"]');
+    eq([ev("byId('dx').school"), ev("byId('dx').penn")], ["Drexel", true]);
+    assert(T.$('.row-head[data-id="dx"] .tag.pn'));
   });
 
   test("capture: From Penn starts on; turning it off is remembered; typing Penn turns it on for one person", async function () {
@@ -826,7 +842,7 @@
     T.click('.tab[data-tab="add"]');
     assert(T.$("#qPenn").classList.contains("on"), "should start on");
     T.type("#qLine", "Avery Stone at NSO"); T.key("#qLine", "Enter");
-    eq(ev("state.contacts[0].penn"), true);
+    eq([ev("state.contacts[0].school"), ev("state.contacts[0].penn")], ["Penn", undefined]);
     assert(/From Penn/.test(T.$(".justadded").innerText) && T.$('.justadded .pennchip.on'), "follow-up card should show Penn on");
     // turn it off
     T.click("#qPenn");
@@ -843,7 +859,7 @@
     T.type("#qLine", "Kai Reed at Penn Geography Club");
     assert(T.$("#qPenn").classList.contains("on"), "typing Penn should switch it on");
     T.key("#qLine", "Enter");
-    eq(ev("state.contacts[0].penn"), true);
+    eq(ev("state.contacts[0].school"), "Penn");
     assert(!T.$("#qPenn").classList.contains("on"), "should fall back to the remembered default (off)");
     eq(ev("state.settings.capturePenn"), false);
   });
@@ -892,23 +908,140 @@
     var s = FNFake.makeState(0, 1);
     s.contacts.push(Object.assign(FNFake.makeContacts(1, 80)[0], { id: "a", name: "Yes Override", company: "", school: "", penn: true }));
     s.contacts.push(Object.assign(FNFake.makeContacts(1, 81)[0], { id: "b", name: "No Override", company: "UPenn", school: "", penn: false }));
-    s.contacts.push(Object.assign(FNFake.makeContacts(1, 82)[0], { id: "c", name: "Auto Penn", company: "Wharton", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 82)[0], { id: "c", name: "Auto Person", company: "Wharton", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 83)[0], { id: "d", name: "Drexel Override", company: "", school: "Drexel", penn: true, family: true }));
     await boot(s, { ver: "x" });
-    var rows = ev("parseCSV(csvString()).map(function (c) { return [c.name, c.penn === undefined ? 'auto' : c.penn, isPenn(c)]; })");
-    eq(rows, [["Yes Override", true, true], ["No Override", false, false], ["Auto Penn", "auto", true]]);
+    var rows = ev("parseCSV(csvString()).map(function (c) { return [c.name, c.school, c.penn === undefined ? 'auto' : c.penn, isPenn(c), !!c.family]; })");
+    eq(rows, [["Yes Override", "Penn", "auto", true, false], ["No Override", "", false, false, false],
+              ["Auto Person", "Penn", "auto", true, false], ["Drexel Override", "Drexel", true, true, true]]);
     var before = ev("JSON.stringify(state)");
     ev("applyRestored(parseBackup(backupString()))");
     eq(ev("JSON.stringify(state)"), before);
   });
 
-  test("Trends says how many are from Penn", async function () {
+  test("Trends says how many are from Penn and how many are family", async function () {
     var s = FNFake.makeState(0, 1);
     s.contacts.push(Object.assign(FNFake.makeContacts(1, 90)[0], { company: "UPenn", school: "" }));
-    s.contacts.push(Object.assign(FNFake.makeContacts(1, 91)[0], { company: "", school: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 91)[0], { company: "", school: "", family: true }));
     await boot(s, { ver: "x" });
     T.click('[data-act="opensettings"]');
     T.click('[data-act="opentrends"]');
-    assert(/1 of 2 are from Penn/.test(T.text()));
+    assert(/1 of 2 are from Penn, 1 are family/.test(T.text()), T.text().slice(-300));
+  });
+
+  test("Penn from the name: 'Sam Lee Penn', 'Sam Lee Wharton' count; Penn as a first name or Penn State does not", async function () {
+    await boot(null);
+    var yes = ["Sam Lee Penn", "Sam Lee Wharton", "Sam Lee - Penn ’28", "Sam (Penn) Lee", "Sam Lee UPenn", "Sam Penn Geo Club"];
+    var no = ["Penn Badgley", "Sam Lee", "Sam Lee Penn State", "Pennington Lee", "Sam Pennsylvania", "Sam Lee Drexel"];
+    eq([yes.filter(function (n) { return !ev("pennName(" + JSON.stringify(n) + ")"); }),
+        no.filter(function (n) { return ev("pennName(" + JSON.stringify(n) + ")"); })], [[], []]);
+  });
+
+  test("first open of 9.10: Penn from name, email or mark moves into an empty School; nothing else is touched", async function () {
+    var s = FNFake.makeState(0, 1);
+    function p(o) { return Object.assign(FNFake.makeContacts(1, Math.floor(Math.random() * 1e6))[0], { company: "", school: "", email: "" }, o); }
+    s.contacts.push(p({ id: "nm", name: "Kai Reed Penn" }));
+    s.contacts.push(p({ id: "em", name: "Kai Moss", email: "kmoss@wharton.upenn.edu" }));
+    s.contacts.push(p({ id: "mk", name: "Kai Hill", penn: true }));
+    s.contacts.push(p({ id: "dx", name: "Kai Vale", school: "Drexel", email: "kv@sas.upenn.edu" }));
+    s.contacts.push(p({ id: "no", name: "Kai Wood Penn", penn: false }));
+    s.contacts.push(p({ id: "pl", name: "Kai Ford" }));
+    await boot(s);   // no version marker: an update from an older version
+    eq(["nm", "em", "mk", "dx", "no", "pl"].map(function (id) { return ev("byId('" + id + "').school"); }), ["Penn", "Penn", "Penn", "Drexel", "", ""]);
+    eq([ev("'penn' in byId('mk')"), ev("byId('no').penn"), ev("isPenn(byId('dx'))")], [false, false, true]);
+    eq(ev("state.settings.pennInSchool"), true);
+    eq(JSON.parse(JSON.parse(localStorage.getItem(T.KEY + ".prev")).raw).contacts[0].school, "", "rollback copy should be from before the change");
+  });
+
+  test("contacts file: a phone name with Penn in it is saved with School: Penn", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    var vcf = ["BEGIN:VCARD", "VERSION:3.0", "N:Penn;Sam Lee;;;", "FN:Sam Lee Penn", "TEL:215-555-0301", "END:VCARD",
+               "BEGIN:VCARD", "VERSION:3.0", "N:Home;Jo;;;", "FN:Jo Home", "TEL:215-555-0302", "END:VCARD", ""].join(String.fromCharCode(13, 10));
+    await importFile(vcf, "c.vcf");
+    T.click('[data-act="pvquickpenn"]');
+    eq(ev("state.contacts.map(function (c) { return [c.name, c.school]; })"), [["Sam Lee Penn", "Penn"]]);
+  });
+
+  /* ================= sort queue and Family (v9.10) ================= */
+
+  test("sort queue: Penn and Family can be set on each imported person before picking a tier", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 3; i++) s.contacts.push(Object.assign(FNFake.makeContacts(1, 300 + i)[0], { id: "q" + i, name: "Queue Person " + i, pending: true, school: "", company: "", email: "" }));
+    await boot(s, { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    assert(/Sort imported contacts/.test(T.text()));
+    var first = T.$(".queue-name").innerText;
+    T.click('.card [data-act="togglepenn"]');
+    T.click('.card [data-act="togglefamily"]');
+    var c = ev("state.contacts.filter(function (x) { return x.name === " + JSON.stringify(first) + "; })[0]");
+    eq([c.school, c.family, c.pending], ["Penn", true, true], "marks should save without leaving the queue");
+    eq(T.$(".queue-name").innerText, first, "the queue should stay on the same person");
+    T.click('[data-act="queuetier"][data-val="Middle"]');
+    c = ev("state.contacts.filter(function (x) { return x.name === " + JSON.stringify(first) + "; })[0]");
+    eq([c.tier, c.pending, c.school, c.family], ["Middle", false, "Penn", true]);
+    assert(T.$(".queue-name").innerText !== first, "should move to the next person");
+  });
+
+  test("Family: one tap on a person, its own list across tiers, a badge, and search", async function () {
+    var s = FNFake.makeState(0, 1);
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 400)[0], { id: "f1", name: "Fam Close", tier: "Close", school: "", notes: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 401)[0], { id: "f2", name: "Fam Acq", tier: "Acquaintance", school: "", notes: "" }));
+    s.contacts.push(Object.assign(FNFake.makeContacts(1, 402)[0], { id: "o1", name: "Other One", tier: "Close", school: "", notes: "" }));
+    await boot(s, { ver: "x" });
+    assert(/Family\s*0/.test(T.$('[data-act="filter"][data-val="Family"]').innerText), "Family list should exist even when empty");
+    T.click('[data-act="filter"][data-val="Close"]');
+    T.click('.row-head[data-id="f1"]');
+    T.click('.row-body [data-act="togglefamily"]');
+    eq(ev("byId('f1').family"), true);
+    assert(T.$('.row-head[data-id="f1"] .tag.fam'), "no Family badge");
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    T.click('.row-head[data-id="f2"]');
+    T.click('.row-body [data-act="togglefamily"]');
+    T.click('[data-act="filter"][data-val="Family"]');
+    eq(T.$$(".row").map(function (r) { return r.dataset.id; }).sort(), ["f1", "f2"]);
+    eq(ev("byId('f1').tier"), "Close", "Family must not change the tier");
+    T.click('.row-head[data-id="f1"]');
+    T.click('.row-body [data-act="togglefamily"]');
+    eq(ev("'family' in byId('f1')"), false);
+    T.click('[data-act="filter"][data-val="Close"]');
+    T.type("#tierSearch", "family");
+    await wait(200);
+    T.click('[data-act="toggleall"]');
+    eq(T.$$(".row").map(function (r) { return r.dataset.id; }), ["f2"]);
+  });
+
+  test("Select: + Penn and + Family mark many at once, with undo", async function () {
+    var s = FNFake.makeState(0, 1);
+    for (var i = 0; i < 4; i++) s.contacts.push(Object.assign(FNFake.makeContacts(1, 500 + i)[0], { id: "s" + i, name: "Sel Person " + i, tier: "Acquaintance", school: i === 3 ? "Drexel" : "", company: "", email: "" }));
+    await boot(s, { ver: "x" });
+    T.click('[data-act="filter"][data-val="Acquaintance"]');
+    T.click('[data-act="selmode"]');
+    ["s0", "s1", "s3"].forEach(function (id) { T.click('[data-act="selpick"][data-id="' + id + '"]'); });
+    T.click('[data-act="selmark"][data-val="penn"]');
+    eq(["s0", "s1", "s2", "s3"].map(function (id) { return [ev("byId('" + id + "').school"), isP(id)]; }),
+       [["Penn", true], ["Penn", true], ["", false], ["Drexel", true]]);
+    function isP(id) { return ev("isPenn(byId('" + id + "'))"); }
+    T.click('[data-act="undomark"]');
+    eq(["s0", "s1", "s3"].map(function (id) { return [ev("byId('" + id + "').school"), isP(id)]; }), [["", false], ["", false], ["Drexel", false]]);
+    T.click('[data-act="selmode"]');
+    ["s1", "s2"].forEach(function (id) { T.click('[data-act="selpick"][data-id="' + id + '"]'); });
+    T.click('[data-act="selmark"][data-val="family"]');
+    eq(ev("state.contacts.filter(isFamily).map(function (c) { return c.id; }).sort()"), ["s1", "s2"]);
+    T.click('[data-act="undomark"]');
+    eq(ev("state.contacts.filter(isFamily).length"), 0);
+  });
+
+  test("capture: Family is per person and switches Penn off for that person only", async function () {
+    await boot(FNFake.makeState(0, 1), { ver: "x" });
+    T.click('.tab[data-tab="add"]');
+    T.click("#qFamily");
+    assert(!T.$("#qPenn").classList.contains("on"), "Penn should switch off for a family member");
+    T.type("#qLine", "Nani Patel"); T.key("#qLine", "Enter");
+    eq([ev("state.contacts[0].family"), ev("state.contacts[0].school"), ev("isPenn(state.contacts[0])")], [true, "", false]);
+    assert(!T.$("#qFamily").classList.contains("on") && T.$("#qPenn").classList.contains("on"), "toggles should reset after saving");
+    eq(ev("state.settings.capturePenn"), undefined, "Family must not change the remembered Penn default");
+    T.type("#qLine", "Sam Ford"); T.key("#qLine", "Enter");
+    eq([ev("!!state.contacts[0].family"), ev("state.contacts[0].school")], [false, "Penn"]);
   });
 
   /* ================= contacts file, duplicates (v9.9) ================= */

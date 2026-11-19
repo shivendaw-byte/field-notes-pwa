@@ -586,3 +586,8 @@ details.more > summary::-webkit-details-marker { display: none; }
 .duperow .d { font-size: 12.5px; color: var(--dim); overflow-wrap: anywhere; }
 .keeps { font-size: 11px; font-weight: 600; color: #86efac; border: 1px solid rgba(74,222,128,.4); border-radius: 5px; padding: 1px 6px; margin-left: 6px; }
 h3 .tag.pn { font-size: 12px; vertical-align: 2px; margin-left: 6px; }
+
+/* ---- v9.10: Family ---- */
+.tag.fam { background: rgba(167,139,250,.18); color: #ddd6fe; border: 1px solid rgba(167,139,250,.4); font-weight: 600; }
+.chip.famchip.on { background: rgba(167,139,250,.24); border-color: rgba(167,139,250,.55); color: #ede9fe; }
+.filter.famfilter.on { border-color: rgba(167,139,250,.6); }

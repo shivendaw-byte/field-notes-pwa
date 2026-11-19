@@ -1,5 +1,15 @@
 # Changelog
 
+## 9.10 — 2026-11-19 — Penn in School, Family
+- Penn is saved in the School field, the way the first 648 were. Turning Penn on writes "Penn" into an empty School; a School that names somewhere else is kept and the person is marked Penn on top. Turning it off clears a plain "Penn".
+- On the first open of 9.10, anyone whose name, company or email says Penn, or who was marked Penn, gets "Penn" in an empty School. Nothing else changes, and the copy from before the update is kept.
+- Phone names count: "Sam Lee Penn", "Sam Lee Wharton", "Sam Lee - Penn '28". A first name of Penn does not.
+- New people from a contacts file who look like Penn are saved with School: Penn.
+- The sort queue for imported contacts has From Penn and Family buttons, so both can be set before picking a tier.
+- Family: a mark you set yourself, with its own badge, its own list next to the tiers, a Family button when adding someone (it switches Penn off for that person), and Select -> + Family. Never guessed from names.
+- Select -> + Penn marks many people at once. Both bulk marks have Undo.
+- CSV export and import carry the Family mark.
+
 ## 9.9 — 2026-11-19 — Penn and duplicates
 - Penn badge on every contact, worked out from the company, school or a upenn.edu email you already have. "University of Pennsylvania" in the company shows as one short Penn badge. Penn State and similar names do not count.
 - "From Penn" toggle on the Add card. It starts on, remembers when you turn it off, and switches on by itself when you type Penn, UPenn or Wharton.
